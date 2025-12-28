@@ -423,13 +423,6 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 			)
 
 			if job.LastBuild != nil {
-				ch <- prometheus.MustNewConstMetric(
-					c.LastBuild,
-					prometheus.GaugeValue,
-					float64(job.LastBuild.Number),
-					labels...,
-				)
-
 				// 从并行获取的结果中获取构建详情
 				var checkCommitID, gitBranch string
 				var status float64
@@ -560,13 +553,6 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 			)
 
 			if job.LastBuild != nil {
-				ch <- prometheus.MustNewConstMetric(
-					c.LastBuild,
-					prometheus.GaugeValue,
-					float64(job.LastBuild.Number),
-					labels...,
-				)
-
 				// 未启用构建详情，使用作业颜色推断状态
 				var statusLabel string
 				switch job.Color {
