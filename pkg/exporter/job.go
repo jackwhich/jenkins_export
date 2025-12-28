@@ -52,8 +52,8 @@ func NewJobCollector(logger *slog.Logger, client *jenkins.Client, failures *prom
 		failures.WithLabelValues("job").Add(0)
 	}
 
-	labels := []string{"name", "path", "class"}
-	labelsWithParams := []string{"name", "path", "class", "check_commitID", "gitBranch"}
+	labels := []string{"path"} // path 就是 jobname，不需要 name 和 class
+	labelsWithParams := []string{"path", "check_commitID", "gitBranch"}
 	return &JobCollector{
 		client:            client,
 		logger:            logger.With("collector", "job"),
@@ -383,9 +383,7 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 		)
 
 		labels := []string{
-			job.Name,
-			job.Path,
-			job.Class,
+			job.Path, // path 就是 jobname，不需要 name 和 class
 		}
 
 		if job.Disabled {
@@ -524,9 +522,7 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 
 			// 导出构建状态指标（无论是否获取到构建详情）
 			labelsWithParams := []string{
-				job.Name,
-				job.Path,
-				job.Class,
+				job.Path, // path 就是 jobname，不需要 name 和 class
 				checkCommitID,
 				gitBranch,
 			}
@@ -541,11 +537,9 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 			// 如果没有 LastBuild，仍然导出构建状态（未构建状态）
 			// 使用空参数值
 			labelsWithParams := []string{
-				job.Name,
-				job.Path,
-				job.Class,
-				"", // check_commitID
-				"", // gitBranch
+				job.Path, // path 就是 jobname，不需要 name 和 class
+				"",       // check_commitID
+				"",       // gitBranch
 			}
 
 			ch <- prometheus.MustNewConstMetric(
