@@ -31,10 +31,6 @@ type JobCollector struct {
 
 	Disabled           *prometheus.Desc
 	LastBuild          *prometheus.Desc
-	LastCompletedBuild *prometheus.Desc
-	LastFailedBuild    *prometheus.Desc
-	LastStableBuild    *prometheus.Desc
-	LastUnstableBuild  *prometheus.Desc
 	Duration           *prometheus.Desc
 	StartTime          *prometheus.Desc
 	EndTime            *prometheus.Desc
@@ -70,30 +66,6 @@ func NewJobCollector(logger *slog.Logger, client *jenkins.Client, failures *prom
 			labels,
 			nil,
 		),
-		LastCompletedBuild: prometheus.NewDesc(
-			"jenkins_job_last_completed_build",
-			"Builder number for last completed build",
-			labels,
-			nil,
-		),
-		LastFailedBuild: prometheus.NewDesc(
-			"jenkins_job_last_failed_build",
-			"Builder number for last failed build",
-			labels,
-			nil,
-		),
-		LastStableBuild: prometheus.NewDesc(
-			"jenkins_job_last_stable_build",
-			"Builder number for last stable build",
-			labels,
-			nil,
-		),
-		LastUnstableBuild: prometheus.NewDesc(
-			"jenkins_job_last_unstable_build",
-			"Builder number for last unstable build",
-			labels,
-			nil,
-		),
 		Duration: prometheus.NewDesc(
 			"jenkins_job_duration",
 			"Duration of last build in ms",
@@ -126,10 +98,6 @@ func (c *JobCollector) Metrics() []*prometheus.Desc {
 	return []*prometheus.Desc{
 		c.Disabled,
 		c.LastBuild,
-		c.LastCompletedBuild,
-		c.LastFailedBuild,
-		c.LastStableBuild,
-		c.LastUnstableBuild,
 		c.Duration,
 		c.StartTime,
 		c.EndTime,
@@ -141,10 +109,6 @@ func (c *JobCollector) Metrics() []*prometheus.Desc {
 func (c *JobCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.Disabled
 	ch <- c.LastBuild
-	ch <- c.LastCompletedBuild
-	ch <- c.LastFailedBuild
-	ch <- c.LastStableBuild
-	ch <- c.LastUnstableBuild
 	ch <- c.Duration
 	ch <- c.StartTime
 	ch <- c.EndTime
@@ -546,8 +510,8 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 				labelsBuildResult := []string{
 					job.Path,      // job_name
 					checkCommitID, // check_commitID
-					gitBranch,      // gitBranch
-					statusLabel,    // status
+					gitBranch,     // gitBranch
+					statusLabel,   // status
 				}
 				ch <- prometheus.MustNewConstMetric(
 					c.BuildLastResult,
@@ -572,41 +536,6 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 				)
 			}
 
-			if job.LastCompletedBuild != nil {
-				ch <- prometheus.MustNewConstMetric(
-					c.LastCompletedBuild,
-					prometheus.GaugeValue,
-					float64(job.LastCompletedBuild.Number),
-					labels...,
-				)
-			}
-
-			if job.LastFailedBuild != nil {
-				ch <- prometheus.MustNewConstMetric(
-					c.LastFailedBuild,
-					prometheus.GaugeValue,
-					float64(job.LastFailedBuild.Number),
-					labels...,
-				)
-			}
-
-			if job.LastStableBuild != nil {
-				ch <- prometheus.MustNewConstMetric(
-					c.LastStableBuild,
-					prometheus.GaugeValue,
-					float64(job.LastStableBuild.Number),
-					labels...,
-				)
-			}
-
-			if job.LastUnstableBuild != nil {
-				ch <- prometheus.MustNewConstMetric(
-					c.LastUnstableBuild,
-					prometheus.GaugeValue,
-					float64(job.LastUnstableBuild.Number),
-					labels...,
-				)
-			}
 
 			processedCount++
 		}
@@ -683,8 +612,8 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 				// 只包含4个标签：job_name, check_commitID, gitBranch, status
 				labelsBuildResult := []string{
 					job.Path,
-					"", // check_commitID
-					"", // gitBranch
+					"",          // check_commitID
+					"",          // gitBranch
 					"not_built", // status
 				}
 
@@ -696,41 +625,6 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 				)
 			}
 
-			if job.LastCompletedBuild != nil {
-				ch <- prometheus.MustNewConstMetric(
-					c.LastCompletedBuild,
-					prometheus.GaugeValue,
-					float64(job.LastCompletedBuild.Number),
-					labels...,
-				)
-			}
-
-			if job.LastFailedBuild != nil {
-				ch <- prometheus.MustNewConstMetric(
-					c.LastFailedBuild,
-					prometheus.GaugeValue,
-					float64(job.LastFailedBuild.Number),
-					labels...,
-				)
-			}
-
-			if job.LastStableBuild != nil {
-				ch <- prometheus.MustNewConstMetric(
-					c.LastStableBuild,
-					prometheus.GaugeValue,
-					float64(job.LastStableBuild.Number),
-					labels...,
-				)
-			}
-
-			if job.LastUnstableBuild != nil {
-				ch <- prometheus.MustNewConstMetric(
-					c.LastUnstableBuild,
-					prometheus.GaugeValue,
-					float64(job.LastUnstableBuild.Number),
-					labels...,
-				)
-			}
 
 			processedCount++
 		}
