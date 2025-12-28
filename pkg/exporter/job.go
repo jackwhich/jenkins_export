@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -208,9 +209,9 @@ func (c *JobCollector) loadJobsFromCache() ([]jenkins.Job, bool) {
 	// 检查缓存文件是否存在
 	info, err := os.Stat(c.cacheFile)
 	if err != nil {
-		c.logger.Info("缓存文件不存在，将从 API 获取",
+		// 首次运行，缓存文件不存在是正常的
+		c.logger.Debug("缓存文件不存在，将从 API 获取（首次运行或缓存文件被删除）",
 			"缓存文件", c.cacheFile,
-			"错误", err,
 		)
 		return nil, false
 	}
@@ -263,6 +264,12 @@ func (c *JobCollector) saveJobsToCache(jobs []jenkins.Job) error {
 
 	c.cacheMutex.Lock()
 	defer c.cacheMutex.Unlock()
+
+	// 确保目录存在
+	dir := filepath.Dir(c.cacheFile)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("创建缓存目录失败: %w", err)
+	}
 
 	data, err := json.MarshalIndent(jobs, "", "  ")
 	if err != nil {
