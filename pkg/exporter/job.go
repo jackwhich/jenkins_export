@@ -634,14 +634,13 @@ func extractParameter(build jenkins.Build, paramName string) string {
 // buildStatusToValue converts build status to numeric value.
 // 0=success, 1=failure, 2=aborted, 3=unstable, 4=in_progress, 5=queued, 6=not_built
 func buildStatusToValue(result string, building bool, queueID int64) float64 {
+	// 如果正在构建，返回 in_progress
 	if building {
 		return 4.0 // 正在构建
 	}
 
-	if queueID > 0 {
-		return 5.0 // 等待中
-	}
-
+	// 优先检查构建结果，如果 result 有值，说明构建已完成，不应该判断为等待
+	// queueID 可能是历史记录，不应该影响已完成构建的状态
 	switch result {
 	case "SUCCESS":
 		return 0.0
@@ -651,7 +650,14 @@ func buildStatusToValue(result string, building bool, queueID int64) float64 {
 		return 2.0
 	case "UNSTABLE":
 		return 3.0
-	default:
-		return 6.0 // 未构建
 	}
+
+	// 如果 result 为空且 queueID > 0，可能是等待中（但这种情况很少，因为通常没有构建记录）
+	// 实际上，对于已完成的构建，queueID 可能仍然有值，但 result 应该有值
+	// 如果 result 为空且 building == false，更可能是未构建状态
+	if queueID > 0 && result == "" {
+		return 5.0 // 等待中（理论上可能，但实际很少见）
+	}
+
+	return 6.0 // 未构建
 }
