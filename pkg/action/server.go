@@ -149,7 +149,7 @@ func handler(cfg *config.Config, logger *slog.Logger, client *jenkins.Client) *c
 			"获取构建详情", cfg.Collector.FetchBuildDetails,
 		)
 
-		registry.MustRegister(exporter.NewJobCollector(
+		jobCollector := exporter.NewJobCollector(
 			logger,
 			client,
 			requestFailures,
@@ -158,7 +158,25 @@ func handler(cfg *config.Config, logger *slog.Logger, client *jenkins.Client) *c
 			cfg.Collector.FetchBuildDetails,
 			cfg.Collector.CacheFile,
 			cfg.Collector.CacheTTL,
-		))
+		)
+
+		// 在启动时初始化缓存文件
+		if cfg.Collector.CacheFile != "" {
+			logger.Info("正在初始化缓存文件",
+				"缓存文件", cfg.Collector.CacheFile,
+			)
+
+			initCtx, initCancel := context.WithTimeout(context.Background(), cfg.Target.Timeout)
+			if err := jobCollector.InitializeCache(initCtx); err != nil {
+				logger.Warn("初始化缓存文件失败，将在首次请求时创建",
+					"缓存文件", cfg.Collector.CacheFile,
+					"错误", err,
+				)
+			}
+			initCancel()
+		}
+
+		registry.MustRegister(jobCollector)
 	}
 
 	reg := promhttp.HandlerFor(

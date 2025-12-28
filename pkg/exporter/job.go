@@ -86,6 +86,47 @@ func NewJobCollector(logger *slog.Logger, client *jenkins.Client, failures *prom
 	}
 }
 
+// InitializeCache initializes the cache file at startup.
+// If cache file doesn't exist or is expired, it will fetch jobs from Jenkins API and save to cache.
+func (c *JobCollector) InitializeCache(ctx context.Context) error {
+	if c.cacheFile == "" {
+		return nil // 未启用缓存
+	}
+
+	// 检查缓存文件是否存在且有效
+	if cachedJobs, fromCache, needsUpdate := c.loadJobsFromCache(); fromCache && !needsUpdate {
+		c.logger.Info("缓存文件已存在且有效，无需初始化",
+			"缓存文件", c.cacheFile,
+			"作业数量", len(cachedJobs),
+		)
+		return nil
+	}
+
+	// 缓存文件不存在或已过期，需要初始化
+	c.logger.Info("正在初始化缓存文件",
+		"缓存文件", c.cacheFile,
+		"说明", "缓存文件不存在或已过期，将从 Jenkins API 获取作业列表并保存到缓存",
+	)
+
+	// 从 API 获取作业列表
+	jobs, err := c.client.Job.All(ctx)
+	if err != nil {
+		return fmt.Errorf("初始化缓存失败，无法从 Jenkins 获取作业列表: %w", err)
+	}
+
+	// 保存到缓存
+	if err := c.saveJobsToCache(jobs); err != nil {
+		return fmt.Errorf("初始化缓存失败，无法保存到缓存文件: %w", err)
+	}
+
+	c.logger.Info("缓存文件初始化完成",
+		"缓存文件", c.cacheFile,
+		"作业数量", len(jobs),
+	)
+
+	return nil
+}
+
 // Metrics simply returns the list metric descriptors for generating a documentation.
 func (c *JobCollector) Metrics() []*prometheus.Desc {
 	return []*prometheus.Desc{
