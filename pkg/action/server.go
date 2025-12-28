@@ -158,6 +158,7 @@ func handler(cfg *config.Config, logger *slog.Logger, client *jenkins.Client) *c
 			cfg.Collector.FetchBuildDetails,
 			cfg.Collector.CacheFile,
 			cfg.Collector.CacheTTL,
+			cfg.Collector.Folders,
 		)
 
 		// 在启动时初始化缓存文件

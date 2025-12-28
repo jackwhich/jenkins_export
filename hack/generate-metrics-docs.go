@@ -27,7 +27,7 @@ func main() {
 
 	collectors = append(
 		collectors,
-		exporter.NewJobCollector(slog.Default(), nil, nil, nil, config.Load().Target).Metrics()...,
+		exporter.NewJobCollector(slog.Default(), nil, nil, nil, config.Load().Target, true, "", 0, nil).Metrics()...,
 	)
 
 	metrics := make([]metric, 0)

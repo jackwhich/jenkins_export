@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,6 +27,7 @@ type JobCollector struct {
 	fetchBuildDetails bool
 	cacheFile         string
 	cacheTTL          time.Duration
+	folders           []string // 要获取的文件夹列表，如果为空则获取所有文件夹
 	cacheMutex        sync.RWMutex
 	lastCacheUpdate   time.Time
 
@@ -37,7 +39,7 @@ type JobCollector struct {
 }
 
 // NewJobCollector returns a new JobCollector.
-func NewJobCollector(logger *slog.Logger, client *jenkins.Client, failures *prometheus.CounterVec, duration *prometheus.HistogramVec, cfg config.Target, fetchBuildDetails bool, cacheFile string, cacheTTL time.Duration) *JobCollector {
+func NewJobCollector(logger *slog.Logger, client *jenkins.Client, failures *prometheus.CounterVec, duration *prometheus.HistogramVec, cfg config.Target, fetchBuildDetails bool, cacheFile string, cacheTTL time.Duration, folders []string) *JobCollector {
 	if failures != nil {
 		failures.WithLabelValues("job").Add(0)
 	}
@@ -52,6 +54,7 @@ func NewJobCollector(logger *slog.Logger, client *jenkins.Client, failures *prom
 		fetchBuildDetails: fetchBuildDetails,
 		cacheFile:         cacheFile,
 		cacheTTL:          cacheTTL,
+		folders:            folders,
 
 		Disabled: prometheus.NewDesc(
 			"jenkins_job_disabled",
@@ -109,11 +112,18 @@ func (c *JobCollector) InitializeCache(ctx context.Context) error {
 	)
 
 	// 从 API 获取作业列表
-	c.logger.Info("开始从 Jenkins API 获取所有作业",
-		"说明", "将递归遍历所有文件夹（如 uat, pro, prod-gray-ebpay 等）获取所有作业",
-	)
-	
-	jobs, err := c.client.Job.All(ctx)
+	if len(c.folders) > 0 {
+		c.logger.Info("开始从 Jenkins API 获取指定文件夹的作业",
+			"文件夹", c.folders,
+			"说明", fmt.Sprintf("将递归遍历指定文件夹 %v 获取所有作业", c.folders),
+		)
+	} else {
+		c.logger.Info("开始从 Jenkins API 获取所有作业",
+			"说明", "将递归遍历所有文件夹（如 uat, pro, prod-gray-ebpay 等）获取所有作业",
+		)
+	}
+
+	jobs, err := c.client.Job.All(ctx, c.folders)
 	if err != nil {
 		return fmt.Errorf("初始化缓存失败，无法从 Jenkins 获取作业列表: %w", err)
 	}
@@ -258,7 +268,7 @@ func (c *JobCollector) updateCacheInBackground() {
 	ctx, cancel := context.WithTimeout(context.Background(), c.config.Timeout)
 	defer cancel()
 
-	jobs, err := c.client.Job.All(ctx)
+	jobs, err := c.client.Job.All(ctx, c.folders)
 	if err != nil {
 		c.logger.Warn("后台更新缓存失败",
 			"错误", err,
@@ -325,7 +335,7 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 		)
 
 		var err error
-		jobs, err = c.client.Job.All(ctx)
+		jobs, err = c.client.Job.All(ctx, c.folders)
 		elapsed = time.Since(now)
 		c.duration.WithLabelValues("job").Observe(elapsed.Seconds())
 

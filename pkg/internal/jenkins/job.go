@@ -46,13 +46,43 @@ func (c *JobClient) Build(ctx context.Context, build *BuildNumber) (Build, error
 }
 
 // All returns all available jobs.
-func (c *JobClient) All(ctx context.Context) ([]Job, error) {
+// If folders is not empty, only jobs from the specified folders will be returned.
+func (c *JobClient) All(ctx context.Context, folders []string) ([]Job, error) {
 	hudson, err := c.Root(ctx)
 
 	if err != nil {
 		return []Job{}, err
 	}
 
+	// 如果指定了文件夹，只处理这些文件夹
+	if len(folders) > 0 {
+		// 创建文件夹名称到文件夹的映射
+		folderMap := make(map[string]Folder)
+		for _, folder := range hudson.Folders {
+			folderMap[folder.Name] = folder
+		}
+
+		// 只处理指定的文件夹
+		filteredFolders := make([]Folder, 0)
+		for _, folderName := range folders {
+			if folder, exists := folderMap[folderName]; exists {
+				filteredFolders = append(filteredFolders, folder)
+			}
+		}
+
+		if len(filteredFolders) == 0 {
+			return []Job{}, fmt.Errorf("指定的文件夹不存在: %v", folders)
+		}
+
+		jobs, err := c.recursiveFolders(ctx, filteredFolders)
+		if err != nil {
+			return []Job{}, err
+		}
+
+		return jobs, nil
+	}
+
+	// 如果没有指定文件夹，获取所有文件夹下的作业
 	jobs, err := c.recursiveFolders(ctx, hudson.Folders)
 
 	if err != nil {
