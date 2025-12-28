@@ -163,22 +163,38 @@ func (c *JobClient) recursiveFoldersParallel(ctx context.Context, folders []Fold
 
 					jobs = []Job{job}
 				} else {
-					// 成功获取文件夹内容
-					// 注意：Folders 字段映射自 JSON 的 "jobs" 字段，包含该文件夹下的所有内容（文件夹和作业）
-					// 必须递归处理 nextFolder.Folders 才能获取到文件夹下的所有作业
-					if len(nextFolder.Folders) > 0 {
-						// 有子文件夹或作业，递归处理所有内容
-						// 递归会处理所有子文件夹和作业，确保不遗漏
-						jobs, err = c.recursiveFoldersParallel(ctx, nextFolder.Folders, maxConcurrency)
-						if err != nil {
-							errMu.Lock()
-							if firstErr == nil {
-								firstErr = err
+					// 检查 _class 字段判断是文件夹还是作业
+					// 如果是文件夹类型，递归处理其内容
+					// 如果是作业类型，直接获取作业
+					if nextFolder.Class == "com.cloudbees.hudson.plugins.folder.Folder" || 
+					   strings.Contains(nextFolder.Class, "Folder") {
+						// 这是文件夹，递归处理其内容
+						// 注意：Folders 字段映射自 JSON 的 "jobs" 字段，包含该文件夹下的所有内容（文件夹和作业）
+						if len(nextFolder.Folders) > 0 {
+							// 有子文件夹或作业，递归处理所有内容
+							jobs, err = c.recursiveFoldersParallel(ctx, nextFolder.Folders, maxConcurrency)
+							if err != nil {
+								errMu.Lock()
+								if firstErr == nil {
+									firstErr = err
+								}
+								errMu.Unlock()
 							}
-							errMu.Unlock()
 						}
+					} else {
+						// 这是作业，直接获取作业详情
+						req, reqErr := c.client.NewRequest(ctx, "GET", fmt.Sprintf("%s/api/json", url), nil)
+						if reqErr != nil {
+							return // 跳过
+						}
+
+						job := Job{}
+						if _, reqErr := c.client.Do(req, &job); reqErr != nil {
+							return // 跳过
+						}
+
+						jobs = []Job{job}
 					}
-					// 注意：文件夹本身不是作业，只有通过递归处理 nextFolder.Folders 才能获取到文件夹下的所有作业
 				}
 			}
 
