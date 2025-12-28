@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 )
 
 // JobClient is a client for the jobs API.
@@ -62,7 +63,23 @@ func (c *JobClient) All(ctx context.Context) ([]Job, error) {
 }
 
 func (c *JobClient) recursiveFolders(ctx context.Context, folders []Folder) ([]Job, error) {
+	return c.recursiveFoldersParallel(ctx, folders, 10) // 最多10个并发
+}
+
+func (c *JobClient) recursiveFoldersParallel(ctx context.Context, folders []Folder, maxConcurrency int) ([]Job, error) {
+	if len(folders) == 0 {
+		return []Job{}, nil
+	}
+
+	// 使用 channel 限制并发数
+	semaphore := make(chan struct{}, maxConcurrency)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
 	result := make([]Job, 0)
+	
+	// 用于收集错误，但不中断处理
+	var firstErr error
+	var errMu sync.Mutex
 
 	for _, folder := range folders {
 		// 检查上下文是否已取消
@@ -70,51 +87,67 @@ func (c *JobClient) recursiveFolders(ctx context.Context, folders []Folder) ([]J
 			return result, ctx.Err()
 		}
 
-		switch class := folder.Class; class {
-		case "com.cloudbees.hudson.plugins.folder.Folder":
-			url := strings.TrimRight(folder.URL, "/")
-			req, err := c.client.NewRequest(ctx, "GET", fmt.Sprintf("%s/api/json?depth=1", url), nil)
+		wg.Add(1)
+		go func(f Folder) {
+			defer wg.Done()
+			
+			// 获取信号量
+			semaphore <- struct{}{}
+			defer func() { <-semaphore }()
 
-			if err != nil {
-				// 继续处理其他文件夹，不因单个失败而中断
-				continue
+			var jobs []Job
+			var err error
+
+			switch class := f.Class; class {
+			case "com.cloudbees.hudson.plugins.folder.Folder":
+				// 这是文件夹，递归处理
+				url := strings.TrimRight(f.URL, "/")
+				req, reqErr := c.client.NewRequest(ctx, "GET", fmt.Sprintf("%s/api/json?depth=1", url), nil)
+
+				if reqErr != nil {
+					return // 跳过这个文件夹
+				}
+
+				nextFolder := Folder{}
+				if _, reqErr := c.client.Do(req, &nextFolder); reqErr != nil {
+					return // 跳过这个文件夹
+				}
+
+				// 递归处理子文件夹（并行）
+				jobs, err = c.recursiveFoldersParallel(ctx, nextFolder.Folders, maxConcurrency)
+				if err != nil {
+					errMu.Lock()
+					if firstErr == nil {
+						firstErr = err
+					}
+					errMu.Unlock()
+				}
+			default:
+				// 这是作业，直接获取
+				url := strings.TrimRight(f.URL, "/")
+				req, reqErr := c.client.NewRequest(ctx, "GET", fmt.Sprintf("%s/api/json", url), nil)
+
+				if reqErr != nil {
+					return // 跳过这个作业
+				}
+
+				job := Job{}
+				if _, reqErr := c.client.Do(req, &job); reqErr != nil {
+					return // 跳过这个作业
+				}
+
+				jobs = []Job{job}
 			}
 
-			nextFolder := Folder{}
-
-			if _, err := c.client.Do(req, &nextFolder); err != nil {
-				// 继续处理其他文件夹，不因单个失败而中断
-				continue
+			// 线程安全地追加结果
+			if len(jobs) > 0 {
+				mu.Lock()
+				result = append(result, jobs...)
+				mu.Unlock()
 			}
-
-			nextResult, err := c.recursiveFolders(ctx, nextFolder.Folders)
-
-			if err != nil {
-				// 即使子文件夹处理失败，也继续处理其他文件夹
-				// 只记录已成功获取的结果
-			} else {
-				result = append(result, nextResult...)
-			}
-		default:
-			// 这是一个作业，不是文件夹
-			url := strings.TrimRight(folder.URL, "/")
-			req, err := c.client.NewRequest(ctx, "GET", fmt.Sprintf("%s/api/json", url), nil)
-
-			if err != nil {
-				// 继续处理其他作业，不因单个失败而中断
-				continue
-			}
-
-			job := Job{}
-
-			if _, err := c.client.Do(req, &job); err != nil {
-				// 继续处理其他作业，不因单个失败而中断
-				continue
-			}
-
-			result = append(result, job)
-		}
+		}(folder)
 	}
 
-	return result, nil
+	wg.Wait()
+	return result, firstErr
 }

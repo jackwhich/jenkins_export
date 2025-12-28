@@ -208,7 +208,7 @@ func (c *JobCollector) loadJobsFromCache() ([]jenkins.Job, bool) {
 	// 检查缓存文件是否存在
 	info, err := os.Stat(c.cacheFile)
 	if err != nil {
-		c.logger.Debug("缓存文件不存在，将从 API 获取",
+		c.logger.Info("缓存文件不存在，将从 API 获取",
 			"缓存文件", c.cacheFile,
 			"错误", err,
 		)
@@ -216,10 +216,12 @@ func (c *JobCollector) loadJobsFromCache() ([]jenkins.Job, bool) {
 	}
 
 	// 检查缓存是否过期
-	if time.Since(info.ModTime()) > c.cacheTTL {
-		c.logger.Debug("缓存已过期，将从 API 获取",
+	age := time.Since(info.ModTime())
+	if age > c.cacheTTL {
+		c.logger.Info("缓存已过期，将从 API 获取",
 			"缓存文件", c.cacheFile,
 			"修改时间", info.ModTime(),
+			"缓存年龄", age,
 			"过期时间", c.cacheTTL,
 		)
 		return nil, false
