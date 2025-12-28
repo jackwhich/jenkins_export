@@ -54,7 +54,7 @@ func NewJobCollector(logger *slog.Logger, client *jenkins.Client, failures *prom
 		fetchBuildDetails: fetchBuildDetails,
 		cacheFile:         cacheFile,
 		cacheTTL:          cacheTTL,
-		folders:            folders,
+		folders:           folders,
 
 		Disabled: prometheus.NewDesc(
 			"jenkins_job_disabled",
