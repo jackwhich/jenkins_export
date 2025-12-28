@@ -230,7 +230,9 @@ func (c *JobCollector) loadJobsFromCache() ([]jenkins.Job, bool, bool) {
 	return jobs, true, needsUpdate
 }
 
-// saveJobsToCache saves jobs to cache file.
+// saveJobsToCache saves jobs to cache file using atomic write.
+// It writes to a temporary file first, then atomically renames it to the target file.
+// This ensures that concurrent reads always see a complete file.
 func (c *JobCollector) saveJobsToCache(jobs []jenkins.Job) error {
 	if c.cacheFile == "" {
 		return nil
@@ -250,12 +252,27 @@ func (c *JobCollector) saveJobsToCache(jobs []jenkins.Job) error {
 		return fmt.Errorf("序列化作业数据失败: %w", err)
 	}
 
-	if err := os.WriteFile(c.cacheFile, data, 0644); err != nil {
-		return fmt.Errorf("写入缓存文件失败: %w", err)
+	// 使用原子写入：先写入临时文件，然后原子性地重命名
+	// 这样可以确保读取操作总是看到完整的文件，避免读取到不完整的数据
+	tmpFile := c.cacheFile + ".tmp"
+	
+	// 写入临时文件
+	if err := os.WriteFile(tmpFile, data, 0644); err != nil {
+		// 如果写入失败，尝试清理临时文件
+		_ = os.Remove(tmpFile)
+		return fmt.Errorf("写入临时缓存文件失败: %w", err)
+	}
+
+	// 原子性地重命名临时文件到目标文件
+	// 在大多数文件系统上，重命名是原子操作，可以确保读取操作不会看到不完整的文件
+	if err := os.Rename(tmpFile, c.cacheFile); err != nil {
+		// 如果重命名失败，清理临时文件
+		_ = os.Remove(tmpFile)
+		return fmt.Errorf("重命名缓存文件失败: %w", err)
 	}
 
 	c.lastCacheUpdate = time.Now()
-	c.logger.Info("已保存作业列表到缓存文件",
+	c.logger.Info("已保存作业列表到缓存文件（原子写入）",
 		"缓存文件", c.cacheFile,
 		"作业数量", len(jobs),
 	)
