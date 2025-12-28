@@ -65,40 +65,50 @@ func (c *JobClient) recursiveFolders(ctx context.Context, folders []Folder) ([]J
 	result := make([]Job, 0)
 
 	for _, folder := range folders {
+		// 检查上下文是否已取消
+		if ctx.Err() != nil {
+			return result, ctx.Err()
+		}
+
 		switch class := folder.Class; class {
 		case "com.cloudbees.hudson.plugins.folder.Folder":
 			url := strings.TrimRight(folder.URL, "/")
 			req, err := c.client.NewRequest(ctx, "GET", fmt.Sprintf("%s/api/json?depth=1", url), nil)
 
 			if err != nil {
-				return nil, err
+				// 继续处理其他文件夹，不因单个失败而中断
+				continue
 			}
 
 			nextFolder := Folder{}
 
 			if _, err := c.client.Do(req, &nextFolder); err != nil {
-				return result, err
+				// 继续处理其他文件夹，不因单个失败而中断
+				continue
 			}
 
 			nextResult, err := c.recursiveFolders(ctx, nextFolder.Folders)
 
 			if err != nil {
-				return result, err
+				// 即使子文件夹处理失败，也继续处理其他文件夹
+				// 只记录已成功获取的结果
+			} else {
+				result = append(result, nextResult...)
 			}
-
-			result = append(result, nextResult...)
 		default:
 			url := strings.TrimRight(folder.URL, "/")
 			req, err := c.client.NewRequest(ctx, "GET", fmt.Sprintf("%s/api/json", url), nil)
 
 			if err != nil {
-				return nil, err
+				// 继续处理其他作业，不因单个失败而中断
+				continue
 			}
 
 			job := Job{}
 
 			if _, err := c.client.Do(req, &job); err != nil {
-				return result, err
+				// 继续处理其他作业，不因单个失败而中断
+				continue
 			}
 
 			result = append(result, job)
