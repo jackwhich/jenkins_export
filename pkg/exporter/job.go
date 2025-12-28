@@ -13,11 +13,11 @@ import (
 
 // JobCollector collects metrics about the servers.
 type JobCollector struct {
-	client           *jenkins.Client
-	logger           *slog.Logger
-	failures         *prometheus.CounterVec
-	duration         *prometheus.HistogramVec
-	config           config.Target
+	client            *jenkins.Client
+	logger            *slog.Logger
+	failures          *prometheus.CounterVec
+	duration          *prometheus.HistogramVec
+	config            config.Target
 	fetchBuildDetails bool
 
 	Disabled              *prometheus.Desc
