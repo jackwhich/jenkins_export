@@ -22,18 +22,18 @@ import (
 
 // Server handles the server sub-command.
 func Server(cfg *config.Config, logger *slog.Logger) error {
-	logger.Info("Launching Jenkins Exporter",
-		"version", version.String,
-		"revision", version.Revision,
-		"date", version.Date,
-		"go", version.Go,
+	logger.Info("正在启动 Jenkins Exporter",
+		"版本", version.String,
+		"修订", version.Revision,
+		"日期", version.Date,
+		"Go版本", version.Go,
 	)
 
 	username, err := config.Value(cfg.Target.Username)
 
 	if err != nil {
-		logger.Error("Failed to load username from file",
-			"err", err,
+		logger.Error("从文件加载用户名失败",
+			"错误", err,
 		)
 
 		return err
@@ -42,12 +42,17 @@ func Server(cfg *config.Config, logger *slog.Logger) error {
 	password, err := config.Value(cfg.Target.Password)
 
 	if err != nil {
-		logger.Error("Failed to load password from file",
-			"err", err,
+		logger.Error("从文件加载密码失败",
+			"错误", err,
 		)
 
 		return err
 	}
+
+	logger.Info("正在连接 Jenkins",
+		"address", cfg.Target.Address,
+		"timeout", cfg.Target.Timeout,
+	)
 
 	client, err := jenkins.NewClient(
 		jenkins.WithEndpoint(cfg.Target.Address),
@@ -57,12 +62,17 @@ func Server(cfg *config.Config, logger *slog.Logger) error {
 	)
 
 	if err != nil {
-		logger.Error("Failed to check credentials",
+		logger.Error("连接 Jenkins 失败",
+			"address", cfg.Target.Address,
 			"err", err,
 		)
 
 		return err
 	}
+
+	logger.Info("成功连接到 Jenkins",
+		"address", cfg.Target.Address,
+	)
 
 	var gr run.Group
 
@@ -75,8 +85,8 @@ func Server(cfg *config.Config, logger *slog.Logger) error {
 		}
 
 		gr.Add(func() error {
-			logger.Info("Starting metrics server",
-				"address", cfg.Server.Addr,
+			logger.Info("正在启动指标服务器",
+				"监听地址", cfg.Server.Addr,
 			)
 
 			return web.ListenAndServe(
@@ -93,15 +103,15 @@ func Server(cfg *config.Config, logger *slog.Logger) error {
 			defer cancel()
 
 			if err := server.Shutdown(ctx); err != nil {
-				logger.Error("Failed to shutdown metrics gracefully",
-					"err", err,
+				logger.Error("指标服务器优雅关闭失败",
+					"错误", err,
 				)
 
 				return
 			}
 
-			logger.Info("Metrics shutdown gracefully",
-				"reason", reason,
+			logger.Info("指标服务器已优雅关闭",
+				"原因", reason,
 			)
 		})
 	}
@@ -135,7 +145,9 @@ func handler(cfg *config.Config, logger *slog.Logger, client *jenkins.Client) *c
 	}
 
 	if cfg.Collector.Jobs {
-		logger.Debug("Jobs collector registered")
+		logger.Info("已注册作业收集器",
+			"获取构建详情", cfg.Collector.FetchBuildDetails,
+		)
 
 		registry.MustRegister(exporter.NewJobCollector(
 			logger,

@@ -30,6 +30,11 @@ type Client struct {
 	Job JobClient
 }
 
+// Endpoint returns the Jenkins API endpoint.
+func (c *Client) Endpoint() string {
+	return c.endpoint
+}
+
 // A ClientOption is used to configure a Client.
 type ClientOption func(*Client) error
 

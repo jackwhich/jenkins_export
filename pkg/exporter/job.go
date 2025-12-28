@@ -1,3 +1,4 @@
+// Package exporter provides Prometheus collectors for Jenkins metrics.
 package exporter
 
 import (
@@ -188,32 +189,65 @@ func (c *JobCollector) Describe(ch chan<- *prometheus.Desc) {
 
 // Collect is called by the Prometheus registry when collecting metrics.
 func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
+	c.logger.Info("开始收集作业指标",
+		"超时时间", c.config.Timeout,
+		"获取构建详情", c.fetchBuildDetails,
+	)
+
 	ctx, cancel := context.WithTimeout(context.Background(), c.config.Timeout)
 	defer cancel()
 
 	now := time.Now()
+	c.logger.Info("正在从 Jenkins 获取作业列表")
+
+	c.logger.Info("获取作业流程说明",
+		"步骤1", "调用 Jenkins API 获取根目录: /api/json?depth=1",
+		"步骤2", "递归遍历所有文件夹（如 uat, pro 等）",
+		"步骤3", "对每个文件夹调用: /job/{folder}/api/json?depth=1",
+		"步骤4", "获取文件夹内的作业: /job/{folder}/job/{job}/api/json",
+	)
+
+	c.logger.Info("步骤1: 正在获取 Jenkins 根目录信息",
+		"说明", "通过 /api/json?depth=1 获取根目录下的所有文件夹和作业",
+	)
+
 	jobs, err := c.client.Job.All(ctx)
-	c.duration.WithLabelValues("job").Observe(time.Since(now).Seconds())
+	elapsed := time.Since(now)
+	c.duration.WithLabelValues("job").Observe(elapsed.Seconds())
 
 	if err != nil {
-		c.logger.Error("Failed to fetch jobs",
-			"err", err,
+		c.logger.Error("获取作业列表失败",
+			"错误", err,
+			"耗时秒", elapsed.Seconds(),
+			"说明", "可能是网络超时或Jenkins服务器无响应，请检查网络连接和Jenkins地址",
 		)
 
 		c.failures.WithLabelValues("job").Inc()
 		return
 	}
 
-	c.logger.Info("Fetched jobs",
-		"count", len(jobs),
+	c.logger.Info("成功获取作业列表",
+		"作业数量", len(jobs),
+		"耗时秒", elapsed.Seconds(),
+		"说明", fmt.Sprintf("已递归遍历所有文件夹（/job/ 路径下），成功获取到 %d 个作业", len(jobs)),
 	)
+
+	c.logger.Info("开始处理作业并导出指标",
+		"总作业数", len(jobs),
+		"获取构建详情", c.fetchBuildDetails,
+	)
+
+	processedCount := 0
+	buildDetailsFetched := 0
+	buildDetailsFailed := 0
 
 	for i, job := range jobs {
 		// 每处理10个作业记录一次进度
 		if i > 0 && i%10 == 0 {
-			c.logger.Debug("Processing jobs",
-				"progress", fmt.Sprintf("%d/%d", i, len(jobs)),
-				"current", job.Path,
+			c.logger.Info("正在处理作业",
+				"进度", fmt.Sprintf("%d/%d", i, len(jobs)),
+				"当前作业", job.Path,
+				"已处理", processedCount,
 			)
 		}
 		var (
@@ -271,16 +305,39 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 			var status float64
 
 			if c.fetchBuildDetails {
+				c.logger.Debug("正在获取构建详情",
+					"作业", job.Path,
+					"构建号", job.LastBuild.Number,
+				)
+
 				// 为获取构建详情创建更短的超时上下文（最多5秒）
+				buildStart := time.Now()
 				buildCtx, buildCancel := context.WithTimeout(ctx, 5*time.Second)
 				build, buildErr = c.client.Job.Build(buildCtx, job.LastBuild)
 				buildCancel()
+				buildElapsed := time.Since(buildStart)
 
 				if buildErr == nil {
+					buildDetailsFetched++
+					c.logger.Debug("成功获取构建详情",
+						"作业", job.Path,
+						"构建号", job.LastBuild.Number,
+						"耗时毫秒", buildElapsed.Milliseconds(),
+					)
+
 					// 成功获取构建详情，提取参数和状态
 					checkCommitID = extractParameter(build, "check_commitID")
 					gitBranch = extractParameter(build, "gitBranch")
 					status = buildStatusToValue(build.Result, build.Building, build.QueueID)
+
+					c.logger.Debug("已提取构建参数",
+						"作业", job.Path,
+						"check_commitID", checkCommitID,
+						"gitBranch", gitBranch,
+						"状态", status,
+						"构建结果", build.Result,
+						"正在构建", build.Building,
+					)
 
 					// 导出构建详情指标
 					ch <- prometheus.MustNewConstMetric(
@@ -304,12 +361,19 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 						labels...,
 					)
 				} else {
-					c.logger.Debug("Failed to fetch last build, using job color for status",
-						"job", job.Path,
-						"err", buildErr,
+					buildDetailsFailed++
+					c.logger.Warn("获取构建详情失败，使用作业颜色推断状态",
+						"作业", job.Path,
+						"构建号", job.LastBuild.Number,
+						"错误", buildErr,
+						"耗时毫秒", buildElapsed.Milliseconds(),
 					)
 					c.failures.WithLabelValues("job").Inc()
 				}
+			} else {
+				c.logger.Debug("跳过构建详情获取（已禁用）",
+					"作业", job.Path,
+				)
 			}
 
 			// 如果未获取构建详情或获取失败，使用作业颜色推断状态
@@ -425,7 +489,17 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 			float64(job.NextBuildNumber),
 			labels...,
 		)
+
+		processedCount++
 	}
+
+	c.logger.Info("作业指标收集完成",
+		"总作业数", len(jobs),
+		"已处理作业数", processedCount,
+		"成功获取构建详情数", buildDetailsFetched,
+		"获取构建详情失败数", buildDetailsFailed,
+		"构建详情获取已启用", c.fetchBuildDetails,
+	)
 }
 
 func colorToGauge(color string) float64 {
