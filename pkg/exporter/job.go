@@ -19,17 +19,19 @@ import (
 
 // JobCollector collects metrics about the servers.
 type JobCollector struct {
-	client            *jenkins.Client
-	logger            *slog.Logger
-	failures          *prometheus.CounterVec
-	duration          *prometheus.HistogramVec
-	config            config.Target
-	fetchBuildDetails bool
-	cacheFile         string
-	cacheTTL          time.Duration
-	folders           []string // 要获取的文件夹列表，如果为空则获取所有文件夹
-	cacheMutex        sync.RWMutex
-	lastCacheUpdate   time.Time
+	client                *jenkins.Client
+	logger                *slog.Logger
+	failures              *prometheus.CounterVec
+	duration              *prometheus.HistogramVec
+	config                config.Target
+	fetchBuildDetails     bool
+	cacheFile             string
+	cacheTTL              time.Duration
+	cacheRefreshInterval  time.Duration // 定时刷新缓存的间隔，如果为0则不启用
+	folders               []string       // 要获取的文件夹列表，如果为空则获取所有文件夹
+	cacheMutex            sync.RWMutex
+	lastCacheUpdate       time.Time
+	stopCacheRefresh      chan struct{} // 用于停止定时刷新任务
 
 	Disabled        *prometheus.Desc
 	Duration        *prometheus.Desc
@@ -39,22 +41,24 @@ type JobCollector struct {
 }
 
 // NewJobCollector returns a new JobCollector.
-func NewJobCollector(logger *slog.Logger, client *jenkins.Client, failures *prometheus.CounterVec, duration *prometheus.HistogramVec, cfg config.Target, fetchBuildDetails bool, cacheFile string, cacheTTL time.Duration, folders []string) *JobCollector {
+func NewJobCollector(logger *slog.Logger, client *jenkins.Client, failures *prometheus.CounterVec, duration *prometheus.HistogramVec, cfg config.Target, fetchBuildDetails bool, cacheFile string, cacheTTL time.Duration, cacheRefreshInterval time.Duration, folders []string) *JobCollector {
 	if failures != nil {
 		failures.WithLabelValues("job").Add(0)
 	}
 
 	labels := []string{"job_name"} // job_name 就是 job 的完整路径，不需要 name 和 class
 	return &JobCollector{
-		client:            client,
-		logger:            logger.With("collector", "job"),
-		failures:          failures,
-		duration:          duration,
-		config:            cfg,
-		fetchBuildDetails: fetchBuildDetails,
-		cacheFile:         cacheFile,
-		cacheTTL:          cacheTTL,
-		folders:           folders,
+		client:               client,
+		logger:               logger.With("collector", "job"),
+		failures:             failures,
+		duration:             duration,
+		config:               cfg,
+		fetchBuildDetails:    fetchBuildDetails,
+		cacheFile:            cacheFile,
+		cacheTTL:             cacheTTL,
+		cacheRefreshInterval: cacheRefreshInterval,
+		folders:              folders,
+		stopCacheRefresh:     make(chan struct{}),
 
 		Disabled: prometheus.NewDesc(
 			"jenkins_job_disabled",
@@ -286,6 +290,51 @@ func (c *JobCollector) updateCacheInBackground() {
 	c.logger.Info("后台更新缓存完成",
 		"作业数量", len(jobs),
 	)
+}
+
+// StartCacheRefresh starts a periodic cache refresh task.
+// This method should be called in a separate goroutine or as part of a run.Group.
+func (c *JobCollector) StartCacheRefresh(ctx context.Context) error {
+	if c.cacheFile == "" {
+		return nil // 未启用缓存，不需要定时刷新
+	}
+
+	if c.cacheRefreshInterval <= 0 {
+		return nil // 未启用定时刷新
+	}
+
+	c.logger.Info("启动定时缓存刷新任务",
+		"缓存文件", c.cacheFile,
+		"刷新间隔", c.cacheRefreshInterval,
+	)
+
+	ticker := time.NewTicker(c.cacheRefreshInterval)
+	defer ticker.Stop()
+
+	// 立即执行一次刷新
+	c.updateCacheInBackground()
+
+	for {
+		select {
+		case <-ctx.Done():
+			c.logger.Info("定时缓存刷新任务已停止",
+				"原因", ctx.Err(),
+			)
+			return ctx.Err()
+		case <-c.stopCacheRefresh:
+			c.logger.Info("定时缓存刷新任务已停止（手动停止）")
+			return nil
+		case <-ticker.C:
+			c.updateCacheInBackground()
+		}
+	}
+}
+
+// StopCacheRefresh stops the periodic cache refresh task.
+func (c *JobCollector) StopCacheRefresh() {
+	if c.stopCacheRefresh != nil {
+		close(c.stopCacheRefresh)
+	}
 }
 
 // Collect is called by the Prometheus registry when collecting metrics.

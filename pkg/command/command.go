@@ -162,6 +162,13 @@ func RootFlags(cfg *config.Config) []cli.Flag {
 			Sources:     cli.EnvVars("JENKINS_EXPORTER_COLLECTOR_JOBS_CACHE_TTL"),
 			Destination: &cfg.Collector.CacheTTL,
 		},
+		&cli.DurationFlag{
+			Name:        "collector.jobs.cache-refresh-interval",
+			Value:       0,
+			Usage:       "Interval for periodic cache refresh. If 0, periodic refresh is disabled. Example: --collector.jobs.cache-refresh-interval=10m",
+			Sources:     cli.EnvVars("JENKINS_EXPORTER_COLLECTOR_JOBS_CACHE_REFRESH_INTERVAL"),
+			Destination: &cfg.Collector.CacheRefreshInterval,
+		},
 		&cli.StringFlag{
 			Name:        "collector.jobs.folders",
 			Value:       "",

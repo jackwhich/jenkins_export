@@ -76,11 +76,68 @@ func Server(cfg *config.Config, logger *slog.Logger) error {
 	)
 
 	var gr run.Group
+	var jobCollector *exporter.JobCollector
+
+	// 如果启用了作业收集器，创建 jobCollector 并启动定时刷新任务
+	if cfg.Collector.Jobs {
+		// 解析逗号分隔的文件夹字符串
+		var folders []string
+		if cfg.Collector.FoldersStr != "" {
+			parts := strings.Split(cfg.Collector.FoldersStr, ",")
+			for _, part := range parts {
+				trimmed := strings.TrimSpace(part)
+				if trimmed != "" {
+					folders = append(folders, trimmed)
+				}
+			}
+		}
+
+		jobCollector = exporter.NewJobCollector(
+			logger,
+			client,
+			requestFailures,
+			requestDuration,
+			cfg.Target,
+			cfg.Collector.FetchBuildDetails,
+			cfg.Collector.CacheFile,
+			cfg.Collector.CacheTTL,
+			cfg.Collector.CacheRefreshInterval,
+			folders,
+		)
+
+		// 在启动时初始化缓存文件
+		if cfg.Collector.CacheFile != "" {
+			logger.Info("正在初始化缓存文件",
+				"缓存文件", cfg.Collector.CacheFile,
+			)
+
+			initCtx, initCancel := context.WithTimeout(context.Background(), cfg.Target.Timeout)
+			if err := jobCollector.InitializeCache(initCtx); err != nil {
+				logger.Warn("初始化缓存文件失败，将在首次请求时创建",
+					"缓存文件", cfg.Collector.CacheFile,
+					"错误", err,
+				)
+			}
+			initCancel()
+		}
+
+		// 如果启用了定时刷新，启动定时刷新任务
+		if cfg.Collector.CacheFile != "" && cfg.Collector.CacheRefreshInterval > 0 {
+			refreshCtx, refreshCancel := context.WithCancel(context.Background())
+
+			gr.Add(func() error {
+				return jobCollector.StartCacheRefresh(refreshCtx)
+			}, func(_ error) {
+				refreshCancel()
+				jobCollector.StopCacheRefresh()
+			})
+		}
+	}
 
 	{
 		server := &http.Server{
 			Addr:         cfg.Server.Addr,
-			Handler:      handler(cfg, logger, client),
+			Handler:      handler(cfg, logger, client, jobCollector),
 			ReadTimeout:  5 * time.Second,
 			WriteTimeout: cfg.Server.Timeout,
 		}
@@ -134,7 +191,7 @@ func Server(cfg *config.Config, logger *slog.Logger) error {
 	return gr.Run()
 }
 
-func handler(cfg *config.Config, logger *slog.Logger, client *jenkins.Client) *chi.Mux {
+func handler(cfg *config.Config, logger *slog.Logger, client *jenkins.Client, jobCollector *exporter.JobCollector) *chi.Mux {
 	mux := chi.NewRouter()
 	mux.Use(middleware.Recoverer(logger))
 	mux.Use(middleware.RealIP)
@@ -145,8 +202,8 @@ func handler(cfg *config.Config, logger *slog.Logger, client *jenkins.Client) *c
 		mux.Mount("/debug", middleware.Profiler())
 	}
 
-	if cfg.Collector.Jobs {
-		// 解析逗号分隔的文件夹字符串
+	if cfg.Collector.Jobs && jobCollector != nil {
+		// 解析逗号分隔的文件夹字符串（用于日志）
 		var folders []string
 		if cfg.Collector.FoldersStr != "" {
 			parts := strings.Split(cfg.Collector.FoldersStr, ",")
@@ -168,34 +225,6 @@ func handler(cfg *config.Config, logger *slog.Logger, client *jenkins.Client) *c
 				"获取构建详情", cfg.Collector.FetchBuildDetails,
 				"说明", "将获取所有文件夹下的作业",
 			)
-		}
-
-		jobCollector := exporter.NewJobCollector(
-			logger,
-			client,
-			requestFailures,
-			requestDuration,
-			cfg.Target,
-			cfg.Collector.FetchBuildDetails,
-			cfg.Collector.CacheFile,
-			cfg.Collector.CacheTTL,
-			folders,
-		)
-
-		// 在启动时初始化缓存文件
-		if cfg.Collector.CacheFile != "" {
-			logger.Info("正在初始化缓存文件",
-				"缓存文件", cfg.Collector.CacheFile,
-			)
-
-			initCtx, initCancel := context.WithTimeout(context.Background(), cfg.Target.Timeout)
-			if err := jobCollector.InitializeCache(initCtx); err != nil {
-				logger.Warn("初始化缓存文件失败，将在首次请求时创建",
-					"缓存文件", cfg.Collector.CacheFile,
-					"错误", err,
-				)
-			}
-			initCancel()
 		}
 
 		registry.MustRegister(jobCollector)

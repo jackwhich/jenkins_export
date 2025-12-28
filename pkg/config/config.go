@@ -36,7 +36,8 @@ type Collector struct {
 	Jobs            bool
 	FetchBuildDetails bool // 是否获取构建详情（包括参数），默认true
 	CacheFile      string // 缓存文件路径，如果为空则不使用缓存
-	CacheTTL       time.Duration // 缓存过期时间，默认5分钟
+	CacheTTL       time.Duration // 缓存过期时间，默认30分钟
+	CacheRefreshInterval time.Duration // 定时刷新缓存的间隔，如果为0则不启用定时刷新
 	FoldersStr     string // 要获取的文件夹列表（逗号分隔），如果为空则获取所有文件夹
 }
 
