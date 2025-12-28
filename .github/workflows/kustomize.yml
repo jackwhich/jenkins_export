@@ -1,0 +1,32 @@
+---
+# yaml-language-server: $schema=https://www.schemastore.org/github-workflow.json
+name: kustomize
+
+"on":
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - master
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+
+      - name: Generate manifest
+        uses: actionhippie/kustomize@a6f3cd9bf7dee30c1fadab37db6e22b295bc1f9b # v3
+        with:
+          version: 5.7.0
+          path: deploy/kubernetes/
+          target: deploy/kubernetes/bundle.yml
+
+...
