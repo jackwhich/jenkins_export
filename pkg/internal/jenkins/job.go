@@ -98,45 +98,63 @@ func (c *JobClient) recursiveFoldersParallel(ctx context.Context, folders []Fold
 			var jobs []Job
 			var err error
 
-			switch class := f.Class; class {
-			case "com.cloudbees.hudson.plugins.folder.Folder":
-				// 这是文件夹，递归处理
-				url := strings.TrimRight(f.URL, "/")
-				req, reqErr := c.client.NewRequest(ctx, "GET", fmt.Sprintf("%s/api/json?depth=1", url), nil)
+			// 先尝试获取文件夹内容，检查是否有子文件夹或作业
+			// 这样可以处理所有类型的文件夹，不仅仅是 com.cloudbees.hudson.plugins.folder.Folder
+			url := strings.TrimRight(f.URL, "/")
+			req, reqErr := c.client.NewRequest(ctx, "GET", fmt.Sprintf("%s/api/json?depth=1", url), nil)
 
+			if reqErr != nil {
+				// 如果请求失败，尝试作为作业处理
+				req, reqErr = c.client.NewRequest(ctx, "GET", fmt.Sprintf("%s/api/json", url), nil)
 				if reqErr != nil {
-					return // 跳过这个文件夹
-				}
-
-				nextFolder := Folder{}
-				if _, reqErr := c.client.Do(req, &nextFolder); reqErr != nil {
-					return // 跳过这个文件夹
-				}
-
-				// 递归处理子文件夹（并行）
-				jobs, err = c.recursiveFoldersParallel(ctx, nextFolder.Folders, maxConcurrency)
-				if err != nil {
-					errMu.Lock()
-					if firstErr == nil {
-						firstErr = err
-					}
-					errMu.Unlock()
-				}
-			default:
-				// 这是作业，直接获取
-				url := strings.TrimRight(f.URL, "/")
-				req, reqErr := c.client.NewRequest(ctx, "GET", fmt.Sprintf("%s/api/json", url), nil)
-
-				if reqErr != nil {
-					return // 跳过这个作业
+					return // 跳过
 				}
 
 				job := Job{}
 				if _, reqErr := c.client.Do(req, &job); reqErr != nil {
-					return // 跳过这个作业
+					return // 跳过
 				}
 
 				jobs = []Job{job}
+			} else {
+				// 尝试作为文件夹处理
+				nextFolder := Folder{}
+				if _, reqErr := c.client.Do(req, &nextFolder); reqErr != nil {
+					// 如果解析失败，尝试作为作业处理
+					req, reqErr = c.client.NewRequest(ctx, "GET", fmt.Sprintf("%s/api/json", url), nil)
+					if reqErr != nil {
+						return // 跳过
+					}
+
+					job := Job{}
+					if _, reqErr := c.client.Do(req, &job); reqErr != nil {
+						return // 跳过
+					}
+
+					jobs = []Job{job}
+				} else {
+					// 成功获取文件夹内容，检查是否有子文件夹或作业
+					if len(nextFolder.Folders) > 0 {
+						// 有子文件夹或作业，递归处理
+						jobs, err = c.recursiveFoldersParallel(ctx, nextFolder.Folders, maxConcurrency)
+						if err != nil {
+							errMu.Lock()
+							if firstErr == nil {
+								firstErr = err
+							}
+							errMu.Unlock()
+						}
+					} else {
+						// 没有子文件夹，可能是空文件夹或作业，尝试作为作业获取
+						req, reqErr = c.client.NewRequest(ctx, "GET", fmt.Sprintf("%s/api/json", url), nil)
+						if reqErr == nil {
+							job := Job{}
+							if _, reqErr := c.client.Do(req, &job); reqErr == nil {
+								jobs = []Job{job}
+							}
+						}
+					}
+				}
 			}
 
 			// 线程安全地追加结果
