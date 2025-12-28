@@ -52,8 +52,8 @@ func NewJobCollector(logger *slog.Logger, client *jenkins.Client, failures *prom
 		failures.WithLabelValues("job").Add(0)
 	}
 
-	labels := []string{"path"} // path 就是 jobname，不需要 name 和 class
-	labelsWithParams := []string{"path", "check_commitID", "gitBranch"}
+	labels := []string{"job_name"} // job_name 就是 job 的完整路径，不需要 name 和 class
+	labelsWithParams := []string{"job_name", "check_commitID", "gitBranch"}
 	return &JobCollector{
 		client:            client,
 		logger:            logger.With("collector", "job"),
