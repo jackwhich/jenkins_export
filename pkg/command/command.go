@@ -148,5 +148,19 @@ func RootFlags(cfg *config.Config) []cli.Flag {
 			Sources:     cli.EnvVars("JENKINS_EXPORTER_COLLECTOR_JOBS_BUILD_DETAILS"),
 			Destination: &cfg.Collector.FetchBuildDetails,
 		},
+		&cli.StringFlag{
+			Name:        "collector.jobs.cache-file",
+			Value:       "",
+			Usage:       "Path to cache file for jobs data. If empty, cache is disabled. Example: /tmp/jenkins_jobs.json",
+			Sources:     cli.EnvVars("JENKINS_EXPORTER_COLLECTOR_JOBS_CACHE_FILE"),
+			Destination: &cfg.Collector.CacheFile,
+		},
+		&cli.DurationFlag{
+			Name:        "collector.jobs.cache-ttl",
+			Value:       5 * time.Minute,
+			Usage:       "Cache TTL (time to live) for jobs data. Cache will be refreshed after this duration",
+			Sources:     cli.EnvVars("JENKINS_EXPORTER_COLLECTOR_JOBS_CACHE_TTL"),
+			Destination: &cfg.Collector.CacheTTL,
+		},
 	}
 }

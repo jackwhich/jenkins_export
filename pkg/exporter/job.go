@@ -3,8 +3,11 @@ package exporter
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -20,6 +23,10 @@ type JobCollector struct {
 	duration          *prometheus.HistogramVec
 	config            config.Target
 	fetchBuildDetails bool
+	cacheFile         string
+	cacheTTL          time.Duration
+	cacheMutex        sync.RWMutex
+	lastCacheUpdate   time.Time
 
 	Disabled              *prometheus.Desc
 	Buildable             *prometheus.Desc
@@ -39,7 +46,7 @@ type JobCollector struct {
 }
 
 // NewJobCollector returns a new JobCollector.
-func NewJobCollector(logger *slog.Logger, client *jenkins.Client, failures *prometheus.CounterVec, duration *prometheus.HistogramVec, cfg config.Target, fetchBuildDetails bool) *JobCollector {
+func NewJobCollector(logger *slog.Logger, client *jenkins.Client, failures *prometheus.CounterVec, duration *prometheus.HistogramVec, cfg config.Target, fetchBuildDetails bool, cacheFile string, cacheTTL time.Duration) *JobCollector {
 	if failures != nil {
 		failures.WithLabelValues("job").Add(0)
 	}
@@ -53,6 +60,8 @@ func NewJobCollector(logger *slog.Logger, client *jenkins.Client, failures *prom
 		duration:          duration,
 		config:            cfg,
 		fetchBuildDetails: fetchBuildDetails,
+		cacheFile:         cacheFile,
+		cacheTTL:          cacheTTL,
 
 		Disabled: prometheus.NewDesc(
 			"jenkins_job_disabled",
@@ -187,43 +196,152 @@ func (c *JobCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.BuildStatus
 }
 
+// loadJobsFromCache loads jobs from cache file if it exists and is not expired.
+func (c *JobCollector) loadJobsFromCache() ([]jenkins.Job, bool) {
+	if c.cacheFile == "" {
+		return nil, false
+	}
+
+	c.cacheMutex.RLock()
+	defer c.cacheMutex.RUnlock()
+
+	// 检查缓存文件是否存在
+	info, err := os.Stat(c.cacheFile)
+	if err != nil {
+		c.logger.Debug("缓存文件不存在，将从 API 获取",
+			"缓存文件", c.cacheFile,
+			"错误", err,
+		)
+		return nil, false
+	}
+
+	// 检查缓存是否过期
+	if time.Since(info.ModTime()) > c.cacheTTL {
+		c.logger.Debug("缓存已过期，将从 API 获取",
+			"缓存文件", c.cacheFile,
+			"修改时间", info.ModTime(),
+			"过期时间", c.cacheTTL,
+		)
+		return nil, false
+	}
+
+	// 读取缓存文件
+	data, err := os.ReadFile(c.cacheFile)
+	if err != nil {
+		c.logger.Warn("读取缓存文件失败，将从 API 获取",
+			"缓存文件", c.cacheFile,
+			"错误", err,
+		)
+		return nil, false
+	}
+
+	var jobs []jenkins.Job
+	if err := json.Unmarshal(data, &jobs); err != nil {
+		c.logger.Warn("解析缓存文件失败，将从 API 获取",
+			"缓存文件", c.cacheFile,
+			"错误", err,
+		)
+		return nil, false
+	}
+
+	c.logger.Info("从缓存文件加载作业列表",
+		"缓存文件", c.cacheFile,
+		"作业数量", len(jobs),
+		"缓存时间", info.ModTime(),
+	)
+
+	return jobs, true
+}
+
+// saveJobsToCache saves jobs to cache file.
+func (c *JobCollector) saveJobsToCache(jobs []jenkins.Job) error {
+	if c.cacheFile == "" {
+		return nil
+	}
+
+	c.cacheMutex.Lock()
+	defer c.cacheMutex.Unlock()
+
+	data, err := json.MarshalIndent(jobs, "", "  ")
+	if err != nil {
+		return fmt.Errorf("序列化作业数据失败: %w", err)
+	}
+
+	if err := os.WriteFile(c.cacheFile, data, 0644); err != nil {
+		return fmt.Errorf("写入缓存文件失败: %w", err)
+	}
+
+	c.lastCacheUpdate = time.Now()
+	c.logger.Info("已保存作业列表到缓存文件",
+		"缓存文件", c.cacheFile,
+		"作业数量", len(jobs),
+	)
+
+	return nil
+}
+
 // Collect is called by the Prometheus registry when collecting metrics.
 func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 	c.logger.Info("开始收集作业指标",
 		"超时时间", c.config.Timeout,
 		"获取构建详情", c.fetchBuildDetails,
+		"缓存文件", c.cacheFile,
+		"缓存TTL", c.cacheTTL,
 	)
 
-	ctx, cancel := context.WithTimeout(context.Background(), c.config.Timeout)
-	defer cancel()
+	// 先尝试从缓存加载
+	var jobs []jenkins.Job
+	var elapsed time.Duration
+	var ctx context.Context
+	var cancel context.CancelFunc
 
-	now := time.Now()
-	c.logger.Info("正在从 Jenkins 获取作业列表")
+	if cachedJobs, ok := c.loadJobsFromCache(); ok {
+		jobs = cachedJobs
+		elapsed = 0 // 从缓存加载，耗时几乎为0
+		c.logger.Info("使用缓存数据",
+			"作业数量", len(jobs),
+		)
+	} else {
+		// 从 API 获取
+		ctx, cancel = context.WithTimeout(context.Background(), c.config.Timeout)
+		defer cancel()
 
-	c.logger.Info("获取作业流程说明",
-		"步骤1", "调用 Jenkins API 获取根目录: /api/json?depth=1",
-		"步骤2", "递归遍历所有文件夹（如 uat, pro 等）",
-		"步骤3", "对每个文件夹调用: /job/{folder}/api/json?depth=1",
-		"步骤4", "获取文件夹内的作业: /job/{folder}/job/{job}/api/json",
-	)
+		now := time.Now()
+		c.logger.Info("正在从 Jenkins 获取作业列表")
 
-	c.logger.Info("步骤1: 正在获取 Jenkins 根目录信息",
-		"说明", "通过 /api/json?depth=1 获取根目录下的所有文件夹和作业",
-	)
-
-	jobs, err := c.client.Job.All(ctx)
-	elapsed := time.Since(now)
-	c.duration.WithLabelValues("job").Observe(elapsed.Seconds())
-
-	if err != nil {
-		c.logger.Error("获取作业列表失败",
-			"错误", err,
-			"耗时秒", elapsed.Seconds(),
-			"说明", "可能是网络超时或Jenkins服务器无响应，请检查网络连接和Jenkins地址",
+		c.logger.Info("获取作业流程说明",
+			"步骤1", "调用 Jenkins API 获取根目录: /api/json?depth=1",
+			"步骤2", "递归遍历所有文件夹（如 uat, pro 等）",
+			"步骤3", "对每个文件夹调用: /job/{folder}/api/json?depth=1",
+			"步骤4", "获取文件夹内的作业: /job/{folder}/job/{job}/api/json",
 		)
 
-		c.failures.WithLabelValues("job").Inc()
-		return
+		c.logger.Info("步骤1: 正在获取 Jenkins 根目录信息",
+			"说明", "通过 /api/json?depth=1 获取根目录下的所有文件夹和作业",
+		)
+
+		var err error
+		jobs, err = c.client.Job.All(ctx)
+		elapsed = time.Since(now)
+		c.duration.WithLabelValues("job").Observe(elapsed.Seconds())
+
+		if err != nil {
+			c.logger.Error("获取作业列表失败",
+				"错误", err,
+				"耗时秒", elapsed.Seconds(),
+				"说明", "可能是网络超时或Jenkins服务器无响应，请检查网络连接和Jenkins地址",
+			)
+
+			c.failures.WithLabelValues("job").Inc()
+			return
+		}
+
+		// 保存到缓存
+		if err := c.saveJobsToCache(jobs); err != nil {
+			c.logger.Warn("保存缓存失败",
+				"错误", err,
+			)
+		}
 	}
 
 	c.logger.Info("成功获取作业列表",
@@ -312,7 +430,7 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 
 				// 为获取构建详情创建更短的超时上下文（最多5秒）
 				buildStart := time.Now()
-				buildCtx, buildCancel := context.WithTimeout(ctx, 5*time.Second)
+				buildCtx, buildCancel := context.WithTimeout(context.Background(), 5*time.Second)
 				build, buildErr = c.client.Job.Build(buildCtx, job.LastBuild)
 				buildCancel()
 				buildElapsed := time.Since(buildStart)

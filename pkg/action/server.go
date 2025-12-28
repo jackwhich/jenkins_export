@@ -156,6 +156,8 @@ func handler(cfg *config.Config, logger *slog.Logger, client *jenkins.Client) *c
 			requestDuration,
 			cfg.Target,
 			cfg.Collector.FetchBuildDetails,
+			cfg.Collector.CacheFile,
+			cfg.Collector.CacheTTL,
 		))
 	}
 

@@ -9,3 +9,4 @@ coverage.out
 /dist
 
 .pre-commit-config.yaml
+.job.json
