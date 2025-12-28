@@ -30,7 +30,6 @@ type JobCollector struct {
 	lastCacheUpdate   time.Time
 
 	Disabled           *prometheus.Desc
-	Buildable          *prometheus.Desc
 	LastBuild          *prometheus.Desc
 	LastCompletedBuild *prometheus.Desc
 	LastFailedBuild    *prometheus.Desc
@@ -39,7 +38,6 @@ type JobCollector struct {
 	Duration           *prometheus.Desc
 	StartTime          *prometheus.Desc
 	EndTime            *prometheus.Desc
-	BuildStatus        *prometheus.Desc
 	BuildLastResult    *prometheus.Desc
 }
 
@@ -49,8 +47,7 @@ func NewJobCollector(logger *slog.Logger, client *jenkins.Client, failures *prom
 		failures.WithLabelValues("job").Add(0)
 	}
 
-	labels := []string{"job_name"}                                                    // job_name 就是 job 的完整路径，不需要 name 和 class
-	labelsWithParams := []string{"job_name", "check_commitID", "gitBranch", "status"} // 添加 status 标签
+	labels := []string{"job_name"} // job_name 就是 job 的完整路径，不需要 name 和 class
 	return &JobCollector{
 		client:            client,
 		logger:            logger.With("collector", "job"),
@@ -64,12 +61,6 @@ func NewJobCollector(logger *slog.Logger, client *jenkins.Client, failures *prom
 		Disabled: prometheus.NewDesc(
 			"jenkins_job_disabled",
 			"1 if the job is disabled, 0 otherwise",
-			labels,
-			nil,
-		),
-		Buildable: prometheus.NewDesc(
-			"jenkins_job_buildable",
-			"1 if the job is buildable, 0 otherwise",
 			labels,
 			nil,
 		),
@@ -121,16 +112,10 @@ func NewJobCollector(logger *slog.Logger, client *jenkins.Client, failures *prom
 			labels,
 			nil,
 		),
-		BuildStatus: prometheus.NewDesc(
-			"jenkins_job_build_status",
-			"Build status: 0=success, 1=failure, 2=aborted, 3=unstable, 4=in_progress, 5=queued, 6=not_built",
-			labelsWithParams,
-			nil,
-		),
 		BuildLastResult: prometheus.NewDesc(
 			"jenkins_build_last_result",
 			"Last build result: 1 indicates current status, status label contains the actual status (success, failure, aborted, waiting, in_progress, not_built)",
-			[]string{"job_name", "id", "分支", "status"}, // 只包含4个标签：job_name, id(check_commitID), 分支(gitBranch), status
+			[]string{"job_name", "check_commitID", "gitBranch", "status"}, // 只包含4个标签：job_name, check_commitID, gitBranch, status
 			nil,
 		),
 	}
@@ -140,7 +125,6 @@ func NewJobCollector(logger *slog.Logger, client *jenkins.Client, failures *prom
 func (c *JobCollector) Metrics() []*prometheus.Desc {
 	return []*prometheus.Desc{
 		c.Disabled,
-		c.Buildable,
 		c.LastBuild,
 		c.LastCompletedBuild,
 		c.LastFailedBuild,
@@ -149,7 +133,6 @@ func (c *JobCollector) Metrics() []*prometheus.Desc {
 		c.Duration,
 		c.StartTime,
 		c.EndTime,
-		c.BuildStatus,
 		c.BuildLastResult,
 	}
 }
@@ -157,7 +140,6 @@ func (c *JobCollector) Metrics() []*prometheus.Desc {
 // Describe sends the super-set of all possible descriptors of metrics collected by this Collector.
 func (c *JobCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.Disabled
-	ch <- c.Buildable
 	ch <- c.LastBuild
 	ch <- c.LastCompletedBuild
 	ch <- c.LastFailedBuild
@@ -166,7 +148,6 @@ func (c *JobCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.Duration
 	ch <- c.StartTime
 	ch <- c.EndTime
-	ch <- c.BuildStatus
 	ch <- c.BuildLastResult
 }
 
@@ -468,8 +449,7 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 				)
 			}
 			var (
-				disabled  float64
-				buildable float64
+				disabled float64
 			)
 
 			labels := []string{
@@ -484,17 +464,6 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 				c.Disabled,
 				prometheus.GaugeValue,
 				disabled,
-				labels...,
-			)
-
-			if job.Buildable {
-				buildable = 1.0
-			}
-
-			ch <- prometheus.MustNewConstMetric(
-				c.Buildable,
-				prometheus.GaugeValue,
-				buildable,
 				labels...,
 			)
 
@@ -572,28 +541,13 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 					statusLabel = "not_built"
 				}
 
-				// 导出构建状态指标（无论是否获取到构建详情）
-				labelsWithParams := []string{
-					job.Path, // path 就是 jobname，不需要 name 和 class
-					checkCommitID,
-					gitBranch,
-					statusLabel, // 添加 status 标签
-				}
-
-				ch <- prometheus.MustNewConstMetric(
-					c.BuildStatus,
-					prometheus.GaugeValue,
-					status,
-					labelsWithParams...,
-				)
-
 				// 导出统一的构建结果指标，值为1表示当前状态，通过status标签区分
-				// 只包含4个标签：job_name, id(check_commitID), 分支(gitBranch), status
+				// 只包含4个标签：job_name, check_commitID, gitBranch, status
 				labelsBuildResult := []string{
 					job.Path,      // job_name
-					checkCommitID, // id
-					gitBranch,     // 分支
-					statusLabel,   // status
+					checkCommitID, // check_commitID
+					gitBranch,      // gitBranch
+					statusLabel,    // status
 				}
 				ch <- prometheus.MustNewConstMetric(
 					c.BuildLastResult,
@@ -602,28 +556,12 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 					labelsBuildResult...,
 				)
 			} else {
-				// 如果没有 LastBuild，仍然导出构建状态（未构建状态）
-				// 使用空参数值
-				labelsWithParams := []string{
-					job.Path,    // path 就是 jobname，不需要 name 和 class
-					"",          // check_commitID
-					"",          // gitBranch
-					"not_built", // status 标签
-				}
-
-				ch <- prometheus.MustNewConstMetric(
-					c.BuildStatus,
-					prometheus.GaugeValue,
-					6.0, // not_built
-					labelsWithParams...,
-				)
-
-				// 导出统一的构建结果指标
-				// 只包含4个标签：job_name, id(check_commitID), 分支(gitBranch), status
+				// 如果没有 LastBuild，仍然导出构建结果指标（未构建状态）
+				// 只包含4个标签：job_name, check_commitID, gitBranch, status
 				labelsBuildResult := []string{
 					job.Path,    // job_name
-					"",          // id (check_commitID)
-					"",          // 分支 (gitBranch)
+					"",          // check_commitID
+					"",          // gitBranch
 					"not_built", // status
 				}
 				ch <- prometheus.MustNewConstMetric(
@@ -684,8 +622,7 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 				)
 			}
 			var (
-				disabled  float64
-				buildable float64
+				disabled float64
 			)
 
 			labels := []string{
@@ -703,17 +640,6 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 				labels...,
 			)
 
-			if job.Buildable {
-				buildable = 1.0
-			}
-
-			ch <- prometheus.MustNewConstMetric(
-				c.Buildable,
-				prometheus.GaugeValue,
-				buildable,
-				labels...,
-			)
-
 			if job.LastBuild != nil {
 				ch <- prometheus.MustNewConstMetric(
 					c.LastBuild,
@@ -724,43 +650,25 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 
 				// 未启用构建详情，使用作业颜色推断状态
 				var statusLabel string
-				var status float64
 				switch job.Color {
 				case "blue", "blue_anime":
-					status = 0.0
 					statusLabel = "success"
 				case "red", "red_anime":
-					status = 1.0
 					statusLabel = "failure"
 				case "aborted", "aborted_anime":
-					status = 2.0
 					statusLabel = "aborted"
 				case "yellow", "yellow_anime":
-					status = 3.0
 					statusLabel = "unstable"
 				default:
-					status = 6.0
 					statusLabel = "not_built"
 				}
 
-				labelsWithParams := []string{
+				// 导出统一的构建结果指标
+				// 只包含4个标签：job_name, check_commitID, gitBranch, status
+				labelsBuildResult := []string{
 					job.Path,
 					"", // check_commitID
 					"", // gitBranch
-					statusLabel,
-				}
-
-				ch <- prometheus.MustNewConstMetric(
-					c.BuildStatus,
-					prometheus.GaugeValue,
-					status,
-					labelsWithParams...,
-				)
-
-				labelsBuildResult := []string{
-					job.Path,
-					"", // id
-					"", // 分支
 					statusLabel,
 				}
 
@@ -771,25 +679,13 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 					labelsBuildResult...,
 				)
 			} else {
-				labelsWithParams := []string{
-					job.Path,
-					"",
-					"",
-					"not_built",
-				}
-
-				ch <- prometheus.MustNewConstMetric(
-					c.BuildStatus,
-					prometheus.GaugeValue,
-					6.0,
-					labelsWithParams...,
-				)
-
+				// 如果没有 LastBuild，仍然导出构建结果指标（未构建状态）
+				// 只包含4个标签：job_name, check_commitID, gitBranch, status
 				labelsBuildResult := []string{
 					job.Path,
-					"",
-					"",
-					"not_built",
+					"", // check_commitID
+					"", // gitBranch
+					"not_built", // status
 				}
 
 				ch <- prometheus.MustNewConstMetric(
