@@ -36,9 +36,7 @@ type JobCollector struct {
 	LastCompletedBuild    *prometheus.Desc
 	LastFailedBuild       *prometheus.Desc
 	LastStableBuild       *prometheus.Desc
-	LastSuccessfulBuild   *prometheus.Desc
 	LastUnstableBuild     *prometheus.Desc
-	LastUnsuccessfulBuild *prometheus.Desc
 	Duration              *prometheus.Desc
 	StartTime             *prometheus.Desc
 	EndTime               *prometheus.Desc
@@ -56,7 +54,7 @@ func NewJobCollector(logger *slog.Logger, client *jenkins.Client, failures *prom
 		failures.WithLabelValues("job").Add(0)
 	}
 
-	labels := []string{"job_name"} // job_name 就是 job 的完整路径，不需要 name 和 class
+	labels := []string{"job_name"}                                                    // job_name 就是 job 的完整路径，不需要 name 和 class
 	labelsWithParams := []string{"job_name", "check_commitID", "gitBranch", "status"} // 添加 status 标签
 	return &JobCollector{
 		client:            client,
@@ -110,21 +108,9 @@ func NewJobCollector(logger *slog.Logger, client *jenkins.Client, failures *prom
 			labels,
 			nil,
 		),
-		LastSuccessfulBuild: prometheus.NewDesc(
-			"jenkins_job_last_successful_build",
-			"Builder number for last successful build",
-			labels,
-			nil,
-		),
 		LastUnstableBuild: prometheus.NewDesc(
 			"jenkins_job_last_unstable_build",
 			"Builder number for last unstable build",
-			labels,
-			nil,
-		),
-		LastUnsuccessfulBuild: prometheus.NewDesc(
-			"jenkins_job_last_unsuccessful_build",
-			"Builder number for last unsuccessful build",
 			labels,
 			nil,
 		),
@@ -195,9 +181,7 @@ func (c *JobCollector) Metrics() []*prometheus.Desc {
 		c.LastCompletedBuild,
 		c.LastFailedBuild,
 		c.LastStableBuild,
-		c.LastSuccessfulBuild,
 		c.LastUnstableBuild,
-		c.LastUnsuccessfulBuild,
 		c.Duration,
 		c.StartTime,
 		c.EndTime,
@@ -219,9 +203,7 @@ func (c *JobCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.LastCompletedBuild
 	ch <- c.LastFailedBuild
 	ch <- c.LastStableBuild
-	ch <- c.LastSuccessfulBuild
 	ch <- c.LastUnstableBuild
-	ch <- c.LastUnsuccessfulBuild
 	ch <- c.Duration
 	ch <- c.StartTime
 	ch <- c.EndTime
@@ -580,7 +562,7 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 
 			// 导出构建状态指标（无论是否获取到构建详情）
 			labelsWithParams := []string{
-				job.Path,    // path 就是 jobname，不需要 name 和 class
+				job.Path, // path 就是 jobname，不需要 name 和 class
 				checkCommitID,
 				gitBranch,
 				statusLabel, // 添加 status 标签
@@ -709,29 +691,11 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 			)
 		}
 
-		if job.LastSuccessfulBuild != nil {
-			ch <- prometheus.MustNewConstMetric(
-				c.LastSuccessfulBuild,
-				prometheus.GaugeValue,
-				float64(job.LastSuccessfulBuild.Number),
-				labels...,
-			)
-		}
-
 		if job.LastUnstableBuild != nil {
 			ch <- prometheus.MustNewConstMetric(
 				c.LastUnstableBuild,
 				prometheus.GaugeValue,
 				float64(job.LastUnstableBuild.Number),
-				labels...,
-			)
-		}
-
-		if job.LastUnsuccessfulBuild != nil {
-			ch <- prometheus.MustNewConstMetric(
-				c.LastUnsuccessfulBuild,
-				prometheus.GaugeValue,
-				float64(job.LastUnsuccessfulBuild.Number),
 				labels...,
 			)
 		}
