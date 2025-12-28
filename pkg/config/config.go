@@ -33,7 +33,8 @@ type Target struct {
 
 // Collector defines the collector specific configuration.
 type Collector struct {
-	Jobs bool
+	Jobs            bool
+	FetchBuildDetails bool // 是否获取构建详情（包括参数），默认true
 }
 
 // Config is a combination of all available configurations.

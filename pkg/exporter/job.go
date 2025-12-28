@@ -13,11 +13,12 @@ import (
 
 // JobCollector collects metrics about the servers.
 type JobCollector struct {
-	client   *jenkins.Client
-	logger   *slog.Logger
-	failures *prometheus.CounterVec
-	duration *prometheus.HistogramVec
-	config   config.Target
+	client           *jenkins.Client
+	logger           *slog.Logger
+	failures         *prometheus.CounterVec
+	duration         *prometheus.HistogramVec
+	config           config.Target
+	fetchBuildDetails bool
 
 	Disabled              *prometheus.Desc
 	Buildable             *prometheus.Desc
@@ -37,7 +38,7 @@ type JobCollector struct {
 }
 
 // NewJobCollector returns a new JobCollector.
-func NewJobCollector(logger *slog.Logger, client *jenkins.Client, failures *prometheus.CounterVec, duration *prometheus.HistogramVec, cfg config.Target) *JobCollector {
+func NewJobCollector(logger *slog.Logger, client *jenkins.Client, failures *prometheus.CounterVec, duration *prometheus.HistogramVec, cfg config.Target, fetchBuildDetails bool) *JobCollector {
 	if failures != nil {
 		failures.WithLabelValues("job").Add(0)
 	}
@@ -45,11 +46,12 @@ func NewJobCollector(logger *slog.Logger, client *jenkins.Client, failures *prom
 	labels := []string{"name", "path", "class"}
 	labelsWithParams := []string{"name", "path", "class", "check_commitID", "gitBranch"}
 	return &JobCollector{
-		client:   client,
-		logger:   logger.With("collector", "job"),
-		failures: failures,
-		duration: duration,
-		config:   cfg,
+		client:            client,
+		logger:            logger.With("collector", "job"),
+		failures:          failures,
+		duration:          duration,
+		config:            cfg,
+		fetchBuildDetails: fetchBuildDetails,
 
 		Disabled: prometheus.NewDesc(
 			"jenkins_job_disabled",
@@ -262,28 +264,57 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 				labels...,
 			)
 
-			// 为获取构建详情创建更短的超时上下文（最多10秒）
-			buildCtx, buildCancel := context.WithTimeout(ctx, 10*time.Second)
-			build, err := c.client.Job.Build(buildCtx, job.LastBuild)
-			buildCancel()
+			// 根据配置决定是否获取构建详情
+			var build jenkins.Build
+			var buildErr error
+			var checkCommitID, gitBranch string
+			var status float64
 
-			if err != nil {
-				c.logger.Debug("Failed to fetch last build, skipping build details",
-					"job", job.Path,
-					"err", err,
-				)
+			if c.fetchBuildDetails {
+				// 为获取构建详情创建更短的超时上下文（最多5秒）
+				buildCtx, buildCancel := context.WithTimeout(ctx, 5*time.Second)
+				build, buildErr = c.client.Job.Build(buildCtx, job.LastBuild)
+				buildCancel()
 
-				// 即使获取构建详情失败，也导出构建状态（使用作业信息）
-				labelsWithParams := []string{
-					job.Name,
-					job.Path,
-					job.Class,
-					"", // check_commitID - 无法获取
-					"", // gitBranch - 无法获取
+				if buildErr == nil {
+					// 成功获取构建详情，提取参数和状态
+					checkCommitID = extractParameter(build, "check_commitID")
+					gitBranch = extractParameter(build, "gitBranch")
+					status = buildStatusToValue(build.Result, build.Building, build.QueueID)
+
+					// 导出构建详情指标
+					ch <- prometheus.MustNewConstMetric(
+						c.Duration,
+						prometheus.GaugeValue,
+						float64(build.Duration),
+						labels...,
+					)
+
+					ch <- prometheus.MustNewConstMetric(
+						c.StartTime,
+						prometheus.GaugeValue,
+						float64(build.Timestamp),
+						labels...,
+					)
+
+					ch <- prometheus.MustNewConstMetric(
+						c.EndTime,
+						prometheus.GaugeValue,
+						float64(build.Timestamp+build.Duration),
+						labels...,
+					)
+				} else {
+					c.logger.Debug("Failed to fetch last build, using job color for status",
+						"job", job.Path,
+						"err", buildErr,
+					)
+					c.failures.WithLabelValues("job").Inc()
 				}
+			}
 
+			// 如果未获取构建详情或获取失败，使用作业颜色推断状态
+			if !c.fetchBuildDetails || buildErr != nil {
 				// 根据作业颜色推断状态
-				var status float64
 				switch job.Color {
 				case "blue", "blue_anime":
 					status = 0.0 // success
@@ -296,59 +327,25 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 				default:
 					status = 6.0 // not_built
 				}
-
-				ch <- prometheus.MustNewConstMetric(
-					c.BuildStatus,
-					prometheus.GaugeValue,
-					status,
-					labelsWithParams...,
-				)
-
-				c.failures.WithLabelValues("job").Inc()
-			} else {
-				ch <- prometheus.MustNewConstMetric(
-					c.Duration,
-					prometheus.GaugeValue,
-					float64(build.Duration),
-					labels...,
-				)
-
-				ch <- prometheus.MustNewConstMetric(
-					c.StartTime,
-					prometheus.GaugeValue,
-					float64(build.Timestamp),
-					labels...,
-				)
-
-				ch <- prometheus.MustNewConstMetric(
-					c.EndTime,
-					prometheus.GaugeValue,
-					float64(build.Timestamp+build.Duration),
-					labels...,
-				)
-
-				// 提取构建参数
-				checkCommitID := extractParameter(build, "check_commitID")
-				gitBranch := extractParameter(build, "gitBranch")
-
-				// 创建带参数的标签
-				labelsWithParams := []string{
-					job.Name,
-					job.Path,
-					job.Class,
-					checkCommitID,
-					gitBranch,
-				}
-
-				// 导出构建状态指标
-				status := buildStatusToValue(build.Result, build.Building, build.QueueID)
-				ch <- prometheus.MustNewConstMetric(
-					c.BuildStatus,
-					prometheus.GaugeValue,
-					status,
-					labelsWithParams...,
-				)
+				checkCommitID = "" // 无法获取
+				gitBranch = ""     // 无法获取
 			}
+
+			// 导出构建状态指标（无论是否获取到构建详情）
+			labelsWithParams := []string{
+				job.Name,
+				job.Path,
+				job.Class,
+				checkCommitID,
+				gitBranch,
+			}
+
+			ch <- prometheus.MustNewConstMetric(
+				c.BuildStatus,
+				prometheus.GaugeValue,
+				status,
+				labelsWithParams...,
+			)
 		} else {
 			// 如果没有 LastBuild，仍然导出构建状态（未构建状态）
 			// 使用空参数值

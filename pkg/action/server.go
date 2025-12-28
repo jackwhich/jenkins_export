@@ -143,6 +143,7 @@ func handler(cfg *config.Config, logger *slog.Logger, client *jenkins.Client) *c
 			requestFailures,
 			requestDuration,
 			cfg.Target,
+			cfg.Collector.FetchBuildDetails,
 		))
 	}
 

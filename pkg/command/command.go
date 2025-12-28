@@ -141,5 +141,12 @@ func RootFlags(cfg *config.Config) []cli.Flag {
 			Sources:     cli.EnvVars("JENKINS_EXPORTER_COLLECTOR_JOBS"),
 			Destination: &cfg.Collector.Jobs,
 		},
+		&cli.BoolFlag{
+			Name:        "collector.jobs.build-details",
+			Value:       true,
+			Usage:       "Fetch build details (parameters, status) for jobs. Disable to improve performance for large Jenkins instances",
+			Sources:     cli.EnvVars("JENKINS_EXPORTER_COLLECTOR_JOBS_BUILD_DETAILS"),
+			Destination: &cfg.Collector.FetchBuildDetails,
+		},
 	}
 }
