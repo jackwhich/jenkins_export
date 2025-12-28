@@ -29,23 +29,19 @@ type JobCollector struct {
 	cacheMutex        sync.RWMutex
 	lastCacheUpdate   time.Time
 
-	Disabled              *prometheus.Desc
-	Buildable             *prometheus.Desc
-	Color                 *prometheus.Desc
-	LastBuild             *prometheus.Desc
-	LastCompletedBuild    *prometheus.Desc
-	LastFailedBuild       *prometheus.Desc
-	LastStableBuild       *prometheus.Desc
-	LastUnstableBuild     *prometheus.Desc
-	Duration              *prometheus.Desc
-	StartTime             *prometheus.Desc
-	EndTime               *prometheus.Desc
-	BuildStatus           *prometheus.Desc
-	BuildSuccess          *prometheus.Desc
-	BuildFailure          *prometheus.Desc
-	BuildAborted          *prometheus.Desc
-	BuildWaiting          *prometheus.Desc
-	BuildInProgress       *prometheus.Desc
+	Disabled           *prometheus.Desc
+	Buildable          *prometheus.Desc
+	Color              *prometheus.Desc
+	LastBuild          *prometheus.Desc
+	LastCompletedBuild *prometheus.Desc
+	LastFailedBuild    *prometheus.Desc
+	LastStableBuild    *prometheus.Desc
+	LastUnstableBuild  *prometheus.Desc
+	Duration           *prometheus.Desc
+	StartTime          *prometheus.Desc
+	EndTime            *prometheus.Desc
+	BuildStatus        *prometheus.Desc
+	BuildLastResult    *prometheus.Desc
 }
 
 // NewJobCollector returns a new JobCollector.
@@ -138,33 +134,9 @@ func NewJobCollector(logger *slog.Logger, client *jenkins.Client, failures *prom
 			labelsWithParams,
 			nil,
 		),
-		BuildSuccess: prometheus.NewDesc(
-			"jenkins_job_build_success",
-			"1 if build is successful, 0 otherwise",
-			labelsWithParams,
-			nil,
-		),
-		BuildFailure: prometheus.NewDesc(
-			"jenkins_job_build_failure",
-			"1 if build failed, 0 otherwise",
-			labelsWithParams,
-			nil,
-		),
-		BuildAborted: prometheus.NewDesc(
-			"jenkins_job_build_aborted",
-			"1 if build was aborted, 0 otherwise",
-			labelsWithParams,
-			nil,
-		),
-		BuildWaiting: prometheus.NewDesc(
-			"jenkins_job_build_waiting",
-			"1 if build is waiting in queue, 0 otherwise",
-			labelsWithParams,
-			nil,
-		),
-		BuildInProgress: prometheus.NewDesc(
-			"jenkins_job_build_in_progress",
-			"1 if build is in progress, 0 otherwise",
+		BuildLastResult: prometheus.NewDesc(
+			"jenkins_build_last_result",
+			"Last build result: 1 indicates current status, status label contains the actual status (success, failure, aborted, waiting, in_progress, not_built)",
 			labelsWithParams,
 			nil,
 		),
@@ -186,11 +158,7 @@ func (c *JobCollector) Metrics() []*prometheus.Desc {
 		c.StartTime,
 		c.EndTime,
 		c.BuildStatus,
-		c.BuildSuccess,
-		c.BuildFailure,
-		c.BuildAborted,
-		c.BuildWaiting,
-		c.BuildInProgress,
+		c.BuildLastResult,
 	}
 }
 
@@ -208,11 +176,7 @@ func (c *JobCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.StartTime
 	ch <- c.EndTime
 	ch <- c.BuildStatus
-	ch <- c.BuildSuccess
-	ch <- c.BuildFailure
-	ch <- c.BuildAborted
-	ch <- c.BuildWaiting
-	ch <- c.BuildInProgress
+	ch <- c.BuildLastResult
 }
 
 // loadJobsFromCache loads jobs from cache file if it exists and is not expired.
@@ -540,22 +504,16 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 
 			// 根据状态值确定 status 标签
 			var statusLabel string
-			var success, failure, aborted, waiting, inProgress float64
 			if status == 0.0 {
 				statusLabel = "success"
-				success = 1.0
 			} else if status == 1.0 {
 				statusLabel = "failure"
-				failure = 1.0
 			} else if status == 2.0 {
 				statusLabel = "aborted"
-				aborted = 1.0
 			} else if status == 4.0 {
 				statusLabel = "in_progress"
-				inProgress = 1.0
 			} else if status == 5.0 {
 				statusLabel = "waiting"
-				waiting = 1.0
 			} else {
 				statusLabel = "not_built"
 			}
@@ -575,39 +533,11 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 				labelsWithParams...,
 			)
 
-			// 导出5种独立的状态指标（0或1）
+			// 导出统一的构建结果指标，值为1表示当前状态，通过status标签区分
 			ch <- prometheus.MustNewConstMetric(
-				c.BuildSuccess,
+				c.BuildLastResult,
 				prometheus.GaugeValue,
-				success,
-				labelsWithParams...,
-			)
-
-			ch <- prometheus.MustNewConstMetric(
-				c.BuildFailure,
-				prometheus.GaugeValue,
-				failure,
-				labelsWithParams...,
-			)
-
-			ch <- prometheus.MustNewConstMetric(
-				c.BuildAborted,
-				prometheus.GaugeValue,
-				aborted,
-				labelsWithParams...,
-			)
-
-			ch <- prometheus.MustNewConstMetric(
-				c.BuildWaiting,
-				prometheus.GaugeValue,
-				waiting,
-				labelsWithParams...,
-			)
-
-			ch <- prometheus.MustNewConstMetric(
-				c.BuildInProgress,
-				prometheus.GaugeValue,
-				inProgress,
+				1.0, // 值为1表示这是当前状态
 				labelsWithParams...,
 			)
 		} else {
@@ -627,39 +557,11 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 				labelsWithParams...,
 			)
 
-			// 未构建状态，所有状态指标都是0
+			// 导出统一的构建结果指标
 			ch <- prometheus.MustNewConstMetric(
-				c.BuildSuccess,
+				c.BuildLastResult,
 				prometheus.GaugeValue,
-				0.0,
-				labelsWithParams...,
-			)
-
-			ch <- prometheus.MustNewConstMetric(
-				c.BuildFailure,
-				prometheus.GaugeValue,
-				0.0,
-				labelsWithParams...,
-			)
-
-			ch <- prometheus.MustNewConstMetric(
-				c.BuildAborted,
-				prometheus.GaugeValue,
-				0.0,
-				labelsWithParams...,
-			)
-
-			ch <- prometheus.MustNewConstMetric(
-				c.BuildWaiting,
-				prometheus.GaugeValue,
-				0.0,
-				labelsWithParams...,
-			)
-
-			ch <- prometheus.MustNewConstMetric(
-				c.BuildInProgress,
-				prometheus.GaugeValue,
-				0.0,
+				1.0, // 值为1表示这是当前状态
 				labelsWithParams...,
 			)
 		}
