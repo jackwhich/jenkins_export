@@ -109,6 +109,10 @@ func (c *JobCollector) InitializeCache(ctx context.Context) error {
 	)
 
 	// 从 API 获取作业列表
+	c.logger.Info("开始从 Jenkins API 获取所有作业",
+		"说明", "将递归遍历所有文件夹（如 uat, pro, prod-gray-ebpay 等）获取所有作业",
+	)
+	
 	jobs, err := c.client.Job.All(ctx)
 	if err != nil {
 		return fmt.Errorf("初始化缓存失败，无法从 Jenkins 获取作业列表: %w", err)
@@ -122,6 +126,7 @@ func (c *JobCollector) InitializeCache(ctx context.Context) error {
 	c.logger.Info("缓存文件初始化完成",
 		"缓存文件", c.cacheFile,
 		"作业数量", len(jobs),
+		"说明", fmt.Sprintf("已成功获取 %d 个作业，包括所有文件夹（如 uat, pro 等）下的所有作业", len(jobs)),
 	)
 
 	return nil
