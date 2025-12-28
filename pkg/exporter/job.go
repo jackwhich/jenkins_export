@@ -30,7 +30,6 @@ type JobCollector struct {
 	lastCacheUpdate   time.Time
 
 	Disabled        *prometheus.Desc
-	LastBuild       *prometheus.Desc
 	Duration        *prometheus.Desc
 	StartTime       *prometheus.Desc
 	EndTime         *prometheus.Desc
