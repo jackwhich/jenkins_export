@@ -19,19 +19,19 @@ import (
 
 // JobCollector collects metrics about the servers.
 type JobCollector struct {
-	client                *jenkins.Client
-	logger                *slog.Logger
-	failures              *prometheus.CounterVec
-	duration              *prometheus.HistogramVec
-	config                config.Target
-	fetchBuildDetails     bool
-	cacheFile             string
-	cacheTTL              time.Duration
-	cacheRefreshInterval  time.Duration // 定时刷新缓存的间隔，如果为0则不启用
-	folders               []string       // 要获取的文件夹列表，如果为空则获取所有文件夹
-	cacheMutex            sync.RWMutex
-	lastCacheUpdate       time.Time
-	stopCacheRefresh      chan struct{} // 用于停止定时刷新任务
+	client               *jenkins.Client
+	logger               *slog.Logger
+	failures             *prometheus.CounterVec
+	duration             *prometheus.HistogramVec
+	config               config.Target
+	fetchBuildDetails    bool
+	cacheFile            string
+	cacheTTL             time.Duration
+	cacheRefreshInterval time.Duration // 定时刷新缓存的间隔，如果为0则不启用
+	folders              []string      // 要获取的文件夹列表，如果为空则获取所有文件夹
+	cacheMutex           sync.RWMutex
+	lastCacheUpdate      time.Time
+	stopCacheRefresh     chan struct{} // 用于停止定时刷新任务
 
 	Disabled        *prometheus.Desc
 	Duration        *prometheus.Desc
@@ -407,14 +407,21 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 		}
 	}
 
-	// 统计各个文件夹下的作业数量
+	// 统计各个文件夹下的作业数量（按顶层文件夹分组）
 	folderJobCount := make(map[string]int)
+	// 统计所有作业路径的前缀，用于调试
+	jobPathPrefixes := make(map[string]int)
 	for _, job := range jobs {
-		// job.Path 格式可能是 "uat/job-name" 或 "prod-gray-ebpay/job-name"
+		// job.Path 格式可能是 "uat/job-name" 或 "gray-uat-ebpay/gray-pre-asset-service-new"
 		parts := strings.Split(job.Path, "/")
 		if len(parts) > 0 {
-			folder := parts[0]
-			folderJobCount[folder]++
+			topLevelFolder := parts[0]
+			folderJobCount[topLevelFolder]++
+			// 记录完整路径前缀（前两级）用于调试
+			if len(parts) >= 2 {
+				prefix := parts[0] + "/" + parts[1]
+				jobPathPrefixes[prefix]++
+			}
 		}
 	}
 
@@ -422,7 +429,8 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 		"作业数量", len(jobs),
 		"耗时秒", elapsed.Seconds(),
 		"说明", fmt.Sprintf("已递归遍历所有文件夹（/job/ 路径下），成功获取到 %d 个作业", len(jobs)),
-		"各文件夹作业数", folderJobCount,
+		"各顶层文件夹作业数", folderJobCount,
+		"作业路径前缀统计", jobPathPrefixes,
 	)
 
 	c.logger.Info("开始处理作业并导出指标",

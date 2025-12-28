@@ -58,27 +58,41 @@ func (c *JobClient) All(ctx context.Context, folders []string) ([]Job, error) {
 	if len(folders) > 0 {
 		// 创建文件夹名称到文件夹的映射
 		folderMap := make(map[string]Folder)
+		allTopLevelFolders := make([]string, 0)
 		for _, folder := range hudson.Folders {
 			folderMap[folder.Name] = folder
+			allTopLevelFolders = append(allTopLevelFolders, folder.Name)
 		}
 
 		// 只处理指定的文件夹
 		filteredFolders := make([]Folder, 0)
+		notFoundFolders := make([]string, 0)
 		for _, folderName := range folders {
 			if folder, exists := folderMap[folderName]; exists {
 				filteredFolders = append(filteredFolders, folder)
+			} else {
+				notFoundFolders = append(notFoundFolders, folderName)
 			}
 		}
 
+		// 如果有些文件夹不存在，在错误信息中包含详细信息
+		if len(notFoundFolders) > 0 {
+			// 仍然继续处理找到的文件夹，但错误信息会包含警告
+			if len(filteredFolders) == 0 {
+				return []Job{}, fmt.Errorf("指定的文件夹不存在: %v (可用的顶层文件夹: %v)", folders, allTopLevelFolders)
+			}
+			// 如果有部分文件夹不存在，仍然处理找到的文件夹，但返回错误信息
+			// 注意：这里不返回错误，而是继续处理，让调用者决定如何处理
+		}
+
 		if len(filteredFolders) == 0 {
-			return []Job{}, fmt.Errorf("指定的文件夹不存在: %v", folders)
+			return []Job{}, fmt.Errorf("指定的文件夹不存在: %v (可用的顶层文件夹: %v)", folders, allTopLevelFolders)
 		}
 
 		jobs, err := c.recursiveFolders(ctx, filteredFolders)
 		if err != nil {
 			return []Job{}, err
 		}
-
 		return jobs, nil
 	}
 
