@@ -135,7 +135,8 @@ func (c *JobClient) recursiveFoldersParallel(ctx context.Context, folders []Fold
 				} else {
 					// 成功获取文件夹内容，检查是否有子文件夹或作业
 					if len(nextFolder.Folders) > 0 {
-						// 有子文件夹或作业，递归处理
+						// 有子文件夹或作业，递归处理所有内容
+						// 注意：Folders 字段映射自 JSON 的 "jobs" 字段，可能包含文件夹和作业
 						jobs, err = c.recursiveFoldersParallel(ctx, nextFolder.Folders, maxConcurrency)
 						if err != nil {
 							errMu.Lock()
@@ -144,13 +145,25 @@ func (c *JobClient) recursiveFoldersParallel(ctx context.Context, folders []Fold
 							}
 							errMu.Unlock()
 						}
-					} else {
-						// 没有子文件夹，可能是空文件夹或作业，尝试作为作业获取
-						req, reqErr = c.client.NewRequest(ctx, "GET", fmt.Sprintf("%s/api/json", url), nil)
-						if reqErr == nil {
-							job := Job{}
-							if _, reqErr := c.client.Do(req, &job); reqErr == nil {
-								jobs = []Job{job}
+					}
+					
+					// 即使有子文件夹，当前 URL 本身也可能是一个作业（某些 Jenkins 插件支持）
+					// 尝试获取当前 URL 作为作业，如果成功则添加到结果中
+					req, reqErr := c.client.NewRequest(ctx, "GET", fmt.Sprintf("%s/api/json", url), nil)
+					if reqErr == nil {
+						job := Job{}
+						if _, reqErr := c.client.Do(req, &job); reqErr == nil {
+							// 检查是否已经通过递归获取到了这个作业（避免重复）
+							// 通过比较 Path 来判断
+							isDuplicate := false
+							for _, existingJob := range jobs {
+								if existingJob.Path == job.Path {
+									isDuplicate = true
+									break
+								}
+							}
+							if !isDuplicate {
+								jobs = append(jobs, job)
 							}
 						}
 					}
