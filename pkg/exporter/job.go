@@ -29,12 +29,12 @@ type JobCollector struct {
 	cacheMutex        sync.RWMutex
 	lastCacheUpdate   time.Time
 
-	Disabled           *prometheus.Desc
-	LastBuild          *prometheus.Desc
-	Duration           *prometheus.Desc
-	StartTime          *prometheus.Desc
-	EndTime            *prometheus.Desc
-	BuildLastResult    *prometheus.Desc
+	Disabled        *prometheus.Desc
+	LastBuild       *prometheus.Desc
+	Duration        *prometheus.Desc
+	StartTime       *prometheus.Desc
+	EndTime         *prometheus.Desc
+	BuildLastResult *prometheus.Desc
 }
 
 // NewJobCollector returns a new JobCollector.
@@ -57,12 +57,6 @@ func NewJobCollector(logger *slog.Logger, client *jenkins.Client, failures *prom
 		Disabled: prometheus.NewDesc(
 			"jenkins_job_disabled",
 			"1 if the job is disabled, 0 otherwise",
-			labels,
-			nil,
-		),
-		LastBuild: prometheus.NewDesc(
-			"jenkins_job_last_build",
-			"Builder number for last build",
 			labels,
 			nil,
 		),
@@ -97,7 +91,6 @@ func NewJobCollector(logger *slog.Logger, client *jenkins.Client, failures *prom
 func (c *JobCollector) Metrics() []*prometheus.Desc {
 	return []*prometheus.Desc{
 		c.Disabled,
-		c.LastBuild,
 		c.Duration,
 		c.StartTime,
 		c.EndTime,
@@ -108,7 +101,6 @@ func (c *JobCollector) Metrics() []*prometheus.Desc {
 // Describe sends the super-set of all possible descriptors of metrics collected by this Collector.
 func (c *JobCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.Disabled
-	ch <- c.LastBuild
 	ch <- c.Duration
 	ch <- c.StartTime
 	ch <- c.EndTime
@@ -536,7 +528,6 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 				)
 			}
 
-
 			processedCount++
 		}
 	} else {
@@ -624,7 +615,6 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 					labelsBuildResult...,
 				)
 			}
-
 
 			processedCount++
 		}
