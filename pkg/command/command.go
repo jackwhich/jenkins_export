@@ -108,7 +108,7 @@ func RootFlags(cfg *config.Config) []cli.Flag {
 		},
 		&cli.DurationFlag{
 			Name:        "request.timeout",
-			Value:       5 * time.Second,
+			Value:       30 * time.Second,
 			Usage:       "Timeout requesting Jenkins API",
 			Sources:     cli.EnvVars("JENKINS_EXPORTER_REQUEST_TIMEOUT"),
 			Destination: &cfg.Target.Timeout,

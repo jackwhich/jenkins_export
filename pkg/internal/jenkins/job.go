@@ -3,6 +3,7 @@ package jenkins
 import (
 	"context"
 	"fmt"
+	"strings"
 )
 
 // JobClient is a client for the jobs API.
@@ -29,7 +30,8 @@ func (c *JobClient) Root(ctx context.Context) (Hudson, error) {
 // Build returns a specific build.
 func (c *JobClient) Build(ctx context.Context, build *BuildNumber) (Build, error) {
 	result := Build{}
-	req, err := c.client.NewRequest(ctx, "GET", fmt.Sprintf("%sapi/json", build.URL), nil)
+	url := strings.TrimRight(build.URL, "/")
+	req, err := c.client.NewRequest(ctx, "GET", fmt.Sprintf("%s/api/json", url), nil)
 
 	if err != nil {
 		return result, err
@@ -65,7 +67,8 @@ func (c *JobClient) recursiveFolders(ctx context.Context, folders []Folder) ([]J
 	for _, folder := range folders {
 		switch class := folder.Class; class {
 		case "com.cloudbees.hudson.plugins.folder.Folder":
-			req, err := c.client.NewRequest(ctx, "GET", fmt.Sprintf("%s/api/json?depth=1", folder.URL), nil)
+			url := strings.TrimRight(folder.URL, "/")
+			req, err := c.client.NewRequest(ctx, "GET", fmt.Sprintf("%s/api/json?depth=1", url), nil)
 
 			if err != nil {
 				return nil, err
@@ -85,7 +88,8 @@ func (c *JobClient) recursiveFolders(ctx context.Context, folders []Folder) ([]J
 
 			result = append(result, nextResult...)
 		default:
-			req, err := c.client.NewRequest(ctx, "GET", fmt.Sprintf("%s/api/json", folder.URL), nil)
+			url := strings.TrimRight(folder.URL, "/")
+			req, err := c.client.NewRequest(ctx, "GET", fmt.Sprintf("%s/api/json", url), nil)
 
 			if err != nil {
 				return nil, err
