@@ -137,7 +137,7 @@ func NewJobCollector(logger *slog.Logger, client *jenkins.Client, failures *prom
 		BuildLastResult: prometheus.NewDesc(
 			"jenkins_build_last_result",
 			"Last build result: 1 indicates current status, status label contains the actual status (success, failure, aborted, waiting, in_progress, not_built)",
-			labelsWithParams,
+			[]string{"job_name", "id", "分支", "status"}, // 只包含4个标签：job_name, id(check_commitID), 分支(gitBranch), status
 			nil,
 		),
 	}
@@ -558,11 +558,18 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 			)
 
 			// 导出统一的构建结果指标
+			// 只包含4个标签：job_name, id(check_commitID), 分支(gitBranch), status
+			labelsBuildResult := []string{
+				job.Path,    // job_name
+				"",          // id (check_commitID)
+				"",          // 分支 (gitBranch)
+				"not_built", // status
+			}
 			ch <- prometheus.MustNewConstMetric(
 				c.BuildLastResult,
 				prometheus.GaugeValue,
 				1.0, // 值为1表示这是当前状态
-				labelsWithParams...,
+				labelsBuildResult...,
 			)
 		}
 
