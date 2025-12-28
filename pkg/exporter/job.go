@@ -348,10 +348,22 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 		}
 	}
 
+	// 统计各个文件夹下的作业数量
+	folderJobCount := make(map[string]int)
+	for _, job := range jobs {
+		// job.Path 格式可能是 "uat/job-name" 或 "prod-gray-ebpay/job-name"
+		parts := strings.Split(job.Path, "/")
+		if len(parts) > 0 {
+			folder := parts[0]
+			folderJobCount[folder]++
+		}
+	}
+
 	c.logger.Info("成功获取作业列表",
 		"作业数量", len(jobs),
 		"耗时秒", elapsed.Seconds(),
 		"说明", fmt.Sprintf("已递归遍历所有文件夹（/job/ 路径下），成功获取到 %d 个作业", len(jobs)),
+		"各文件夹作业数", folderJobCount,
 	)
 
 	c.logger.Info("开始处理作业并导出指标",

@@ -133,8 +133,9 @@ func (c *JobClient) recursiveFoldersParallel(ctx context.Context, folders []Fold
 
 					jobs = []Job{job}
 				} else {
-					// 成功获取文件夹内容，检查是否有子文件夹或作业
+					// 成功获取文件夹内容
 					// 注意：Folders 字段映射自 JSON 的 "jobs" 字段，包含该文件夹下的所有内容（文件夹和作业）
+					// 必须递归处理 nextFolder.Folders 才能获取到文件夹下的所有作业
 					if len(nextFolder.Folders) > 0 {
 						// 有子文件夹或作业，递归处理所有内容
 						// 递归会处理所有子文件夹和作业，确保不遗漏
@@ -147,8 +148,7 @@ func (c *JobClient) recursiveFoldersParallel(ctx context.Context, folders []Fold
 							errMu.Unlock()
 						}
 					}
-					// 注意：当前文件夹本身不应该作为作业处理，因为它是文件夹
-					// 只有通过递归处理 nextFolder.Folders 才能获取到文件夹下的所有作业
+					// 注意：文件夹本身不是作业，只有通过递归处理 nextFolder.Folders 才能获取到文件夹下的所有作业
 				}
 			}
 
