@@ -157,8 +157,8 @@ func RootFlags(cfg *config.Config) []cli.Flag {
 		},
 		&cli.DurationFlag{
 			Name:        "collector.jobs.cache-ttl",
-			Value:       5 * time.Minute,
-			Usage:       "Cache TTL (time to live) for jobs data. Cache will be refreshed after this duration",
+			Value:       30 * time.Minute,
+			Usage:       "Cache TTL (time to live) for jobs data. Cache will be refreshed after this duration (default: 30m)",
 			Sources:     cli.EnvVars("JENKINS_EXPORTER_COLLECTOR_JOBS_CACHE_TTL"),
 			Destination: &cfg.Collector.CacheTTL,
 		},

@@ -179,10 +179,13 @@ func (c *JobCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.BuildLastResult
 }
 
-// loadJobsFromCache loads jobs from cache file if it exists and is not expired.
-func (c *JobCollector) loadJobsFromCache() ([]jenkins.Job, bool) {
+// loadJobsFromCache loads jobs from cache file if it exists.
+// Returns (jobs, fromCache, needsUpdate)
+// fromCache: true if loaded from cache, false if cache doesn't exist
+// needsUpdate: true if cache is expired and needs background update
+func (c *JobCollector) loadJobsFromCache() ([]jenkins.Job, bool, bool) {
 	if c.cacheFile == "" {
-		return nil, false
+		return nil, false, false
 	}
 
 	c.cacheMutex.RLock()
@@ -195,19 +198,7 @@ func (c *JobCollector) loadJobsFromCache() ([]jenkins.Job, bool) {
 		c.logger.Debug("缓存文件不存在，将从 API 获取（首次运行或缓存文件被删除）",
 			"缓存文件", c.cacheFile,
 		)
-		return nil, false
-	}
-
-	// 检查缓存是否过期
-	age := time.Since(info.ModTime())
-	if age > c.cacheTTL {
-		c.logger.Info("缓存已过期，将从 API 获取",
-			"缓存文件", c.cacheFile,
-			"修改时间", info.ModTime(),
-			"缓存年龄", age,
-			"过期时间", c.cacheTTL,
-		)
-		return nil, false
+		return nil, false, false
 	}
 
 	// 读取缓存文件
@@ -217,7 +208,7 @@ func (c *JobCollector) loadJobsFromCache() ([]jenkins.Job, bool) {
 			"缓存文件", c.cacheFile,
 			"错误", err,
 		)
-		return nil, false
+		return nil, false, false
 	}
 
 	var jobs []jenkins.Job
@@ -226,16 +217,30 @@ func (c *JobCollector) loadJobsFromCache() ([]jenkins.Job, bool) {
 			"缓存文件", c.cacheFile,
 			"错误", err,
 		)
-		return nil, false
+		return nil, false, false
 	}
 
-	c.logger.Info("从缓存文件加载作业列表",
-		"缓存文件", c.cacheFile,
-		"作业数量", len(jobs),
-		"缓存时间", info.ModTime(),
-	)
+	// 检查缓存是否过期
+	age := time.Since(info.ModTime())
+	needsUpdate := age > c.cacheTTL
 
-	return jobs, true
+	if needsUpdate {
+		c.logger.Info("缓存已过期，将使用缓存数据并后台更新",
+			"缓存文件", c.cacheFile,
+			"修改时间", info.ModTime(),
+			"缓存年龄", age,
+			"过期时间", c.cacheTTL,
+			"作业数量", len(jobs),
+		)
+	} else {
+		c.logger.Info("从缓存文件加载作业列表",
+			"缓存文件", c.cacheFile,
+			"作业数量", len(jobs),
+			"缓存时间", info.ModTime(),
+		)
+	}
+
+	return jobs, true, needsUpdate
 }
 
 // saveJobsToCache saves jobs to cache file.
@@ -271,6 +276,35 @@ func (c *JobCollector) saveJobsToCache(jobs []jenkins.Job) error {
 	return nil
 }
 
+// updateCacheInBackground updates cache in background without blocking.
+func (c *JobCollector) updateCacheInBackground() {
+	c.logger.Info("开始后台更新缓存",
+		"缓存文件", c.cacheFile,
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), c.config.Timeout)
+	defer cancel()
+
+	jobs, err := c.client.Job.All(ctx)
+	if err != nil {
+		c.logger.Warn("后台更新缓存失败",
+			"错误", err,
+		)
+		return
+	}
+
+	if err := c.saveJobsToCache(jobs); err != nil {
+		c.logger.Warn("后台保存缓存失败",
+			"错误", err,
+		)
+		return
+	}
+
+	c.logger.Info("后台更新缓存完成",
+		"作业数量", len(jobs),
+	)
+}
+
 // Collect is called by the Prometheus registry when collecting metrics.
 func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 	c.logger.Info("开始收集作业指标",
@@ -286,12 +320,18 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 	var ctx context.Context
 	var cancel context.CancelFunc
 
-	if cachedJobs, ok := c.loadJobsFromCache(); ok {
+	if cachedJobs, fromCache, needsUpdate := c.loadJobsFromCache(); fromCache {
 		jobs = cachedJobs
 		elapsed = 0 // 从缓存加载，耗时几乎为0
 		c.logger.Info("使用缓存数据",
 			"作业数量", len(jobs),
+			"需要后台更新", needsUpdate,
 		)
+		
+		// 如果缓存过期，后台异步更新（不阻塞当前请求）
+		if needsUpdate {
+			go c.updateCacheInBackground()
+		}
 	} else {
 		// 从 API 获取
 		ctx, cancel = context.WithTimeout(context.Background(), c.config.Timeout)
@@ -350,15 +390,92 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 	buildDetailsFetched := 0
 	buildDetailsFailed := 0
 
-	for i, job := range jobs {
-		// 每处理10个作业记录一次进度
-		if i > 0 && i%10 == 0 {
-			c.logger.Info("正在处理作业",
-				"进度", fmt.Sprintf("%d/%d", i, len(jobs)),
-				"当前作业", job.Path,
-				"已处理", processedCount,
-			)
+	// 如果启用构建详情获取，使用并行处理
+	if c.fetchBuildDetails {
+		// 并行获取构建详情
+		type buildDetailResult struct {
+			job         jenkins.Job
+			build       jenkins.Build
+			buildErr    error
+			checkCommitID string
+			gitBranch   string
+			status      float64
 		}
+
+		// 创建 worker pool，最多10个并发
+		const maxWorkers = 10
+		jobsChan := make(chan jenkins.Job, len(jobs))
+		resultsChan := make(chan buildDetailResult, len(jobs))
+
+		// 启动 workers
+		var wg sync.WaitGroup
+		for w := 0; w < maxWorkers; w++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for job := range jobsChan {
+					if job.LastBuild == nil {
+						resultsChan <- buildDetailResult{job: job}
+						continue
+					}
+
+					buildCtx, buildCancel := context.WithTimeout(context.Background(), 5*time.Second)
+					build, buildErr := c.client.Job.Build(buildCtx, job.LastBuild)
+					buildCancel()
+
+					result := buildDetailResult{
+						job:      job,
+						build:    build,
+						buildErr: buildErr,
+					}
+
+					if buildErr == nil {
+						result.checkCommitID = extractParameter(build, "check_commitID")
+						result.gitBranch = extractParameter(build, "gitBranch")
+						result.status = buildStatusToValue(build.Result, build.Building, build.QueueID)
+					}
+
+					resultsChan <- result
+				}
+			}()
+		}
+
+		// 发送所有作业到 channel
+		go func() {
+			for _, job := range jobs {
+				jobsChan <- job
+			}
+			close(jobsChan)
+		}()
+
+		// 等待所有 workers 完成
+		go func() {
+			wg.Wait()
+			close(resultsChan)
+		}()
+
+		// 收集结果并处理
+		buildDetailsMap := make(map[string]buildDetailResult)
+		for result := range resultsChan {
+			if result.buildErr == nil {
+				buildDetailsFetched++
+				buildDetailsMap[result.job.Path] = result
+			} else {
+				buildDetailsFailed++
+				buildDetailsMap[result.job.Path] = result
+			}
+		}
+
+		// 处理所有作业
+		for i, job := range jobs {
+			// 每处理10个作业记录一次进度
+			if i > 0 && i%10 == 0 {
+				c.logger.Info("正在处理作业",
+					"进度", fmt.Sprintf("%d/%d", i, len(jobs)),
+					"当前作业", job.Path,
+					"已处理", processedCount,
+				)
+			}
 		var (
 			disabled  float64
 			buildable float64
@@ -405,87 +522,40 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 				labels...,
 			)
 
-			// 根据配置决定是否获取构建详情
-			var build jenkins.Build
-			var buildErr error
+			// 从并行获取的结果中获取构建详情
 			var checkCommitID, gitBranch string
 			var status float64
+			result, hasResult := buildDetailsMap[job.Path]
 
-			if c.fetchBuildDetails {
-				c.logger.Debug("正在获取构建详情",
-					"作业", job.Path,
-					"构建号", job.LastBuild.Number,
+			if hasResult && result.buildErr == nil {
+				// 成功获取构建详情
+				checkCommitID = result.checkCommitID
+				gitBranch = result.gitBranch
+				status = result.status
+
+				// 导出构建详情指标
+				ch <- prometheus.MustNewConstMetric(
+					c.Duration,
+					prometheus.GaugeValue,
+					float64(result.build.Duration),
+					labels...,
 				)
 
-				// 为获取构建详情创建更短的超时上下文（最多5秒）
-				buildStart := time.Now()
-				buildCtx, buildCancel := context.WithTimeout(context.Background(), 5*time.Second)
-				build, buildErr = c.client.Job.Build(buildCtx, job.LastBuild)
-				buildCancel()
-				buildElapsed := time.Since(buildStart)
+				ch <- prometheus.MustNewConstMetric(
+					c.StartTime,
+					prometheus.GaugeValue,
+					float64(result.build.Timestamp),
+					labels...,
+				)
 
-				if buildErr == nil {
-					buildDetailsFetched++
-					c.logger.Debug("成功获取构建详情",
-						"作业", job.Path,
-						"构建号", job.LastBuild.Number,
-						"耗时毫秒", buildElapsed.Milliseconds(),
-					)
-
-					// 成功获取构建详情，提取参数和状态
-					checkCommitID = extractParameter(build, "check_commitID")
-					gitBranch = extractParameter(build, "gitBranch")
-					status = buildStatusToValue(build.Result, build.Building, build.QueueID)
-
-					c.logger.Debug("已提取构建参数",
-						"作业", job.Path,
-						"check_commitID", checkCommitID,
-						"gitBranch", gitBranch,
-						"状态", status,
-						"构建结果", build.Result,
-						"正在构建", build.Building,
-					)
-
-					// 导出构建详情指标
-					ch <- prometheus.MustNewConstMetric(
-						c.Duration,
-						prometheus.GaugeValue,
-						float64(build.Duration),
-						labels...,
-					)
-
-					ch <- prometheus.MustNewConstMetric(
-						c.StartTime,
-						prometheus.GaugeValue,
-						float64(build.Timestamp),
-						labels...,
-					)
-
-					ch <- prometheus.MustNewConstMetric(
-						c.EndTime,
-						prometheus.GaugeValue,
-						float64(build.Timestamp+build.Duration),
-						labels...,
-					)
-				} else {
-					buildDetailsFailed++
-					c.logger.Warn("获取构建详情失败，使用作业颜色推断状态",
-						"作业", job.Path,
-						"构建号", job.LastBuild.Number,
-						"错误", buildErr,
-						"耗时毫秒", buildElapsed.Milliseconds(),
-					)
-					c.failures.WithLabelValues("job").Inc()
-				}
+				ch <- prometheus.MustNewConstMetric(
+					c.EndTime,
+					prometheus.GaugeValue,
+					float64(result.build.Timestamp+result.build.Duration),
+					labels...,
+				)
 			} else {
-				c.logger.Debug("跳过构建详情获取（已禁用）",
-					"作业", job.Path,
-				)
-			}
-
-			// 如果未获取构建详情或获取失败，使用作业颜色推断状态
-			if !c.fetchBuildDetails || buildErr != nil {
-				// 根据作业颜色推断状态
+				// 获取失败或未获取，使用作业颜色推断状态
 				switch job.Color {
 				case "blue", "blue_anime":
 					status = 0.0 // success
@@ -534,11 +604,18 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 			)
 
 			// 导出统一的构建结果指标，值为1表示当前状态，通过status标签区分
+			// 只包含4个标签：job_name, id(check_commitID), 分支(gitBranch), status
+			labelsBuildResult := []string{
+				job.Path,    // job_name
+				checkCommitID, // id
+				gitBranch,   // 分支
+				statusLabel, // status
+			}
 			ch <- prometheus.MustNewConstMetric(
 				c.BuildLastResult,
 				prometheus.GaugeValue,
 				1.0, // 值为1表示这是当前状态
-				labelsWithParams...,
+				labelsBuildResult...,
 			)
 		} else {
 			// 如果没有 LastBuild，仍然导出构建状态（未构建状态）
@@ -610,6 +687,180 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 		}
 
 		processedCount++
+		}
+	} else {
+		// 未启用构建详情获取，串行处理
+		for i, job := range jobs {
+			// 每处理10个作业记录一次进度
+			if i > 0 && i%10 == 0 {
+				c.logger.Info("正在处理作业",
+					"进度", fmt.Sprintf("%d/%d", i, len(jobs)),
+					"当前作业", job.Path,
+					"已处理", processedCount,
+				)
+			}
+			var (
+				disabled  float64
+				buildable float64
+			)
+
+			labels := []string{
+				job.Path, // path 就是 jobname，不需要 name 和 class
+			}
+
+			if job.Disabled {
+				disabled = 1.0
+			}
+
+			ch <- prometheus.MustNewConstMetric(
+				c.Disabled,
+				prometheus.GaugeValue,
+				disabled,
+				labels...,
+			)
+
+			if job.Buildable {
+				buildable = 1.0
+			}
+
+			ch <- prometheus.MustNewConstMetric(
+				c.Buildable,
+				prometheus.GaugeValue,
+				buildable,
+				labels...,
+			)
+
+			ch <- prometheus.MustNewConstMetric(
+				c.Color,
+				prometheus.GaugeValue,
+				colorToGauge(job.Color),
+				labels...,
+			)
+
+			if job.LastBuild != nil {
+				ch <- prometheus.MustNewConstMetric(
+					c.LastBuild,
+					prometheus.GaugeValue,
+					float64(job.LastBuild.Number),
+					labels...,
+				)
+
+				// 未启用构建详情，使用作业颜色推断状态
+				var statusLabel string
+				var status float64
+				switch job.Color {
+				case "blue", "blue_anime":
+					status = 0.0
+					statusLabel = "success"
+				case "red", "red_anime":
+					status = 1.0
+					statusLabel = "failure"
+				case "aborted", "aborted_anime":
+					status = 2.0
+					statusLabel = "aborted"
+				case "yellow", "yellow_anime":
+					status = 3.0
+					statusLabel = "unstable"
+				default:
+					status = 6.0
+					statusLabel = "not_built"
+				}
+
+				labelsWithParams := []string{
+					job.Path,
+					"", // check_commitID
+					"", // gitBranch
+					statusLabel,
+				}
+
+				ch <- prometheus.MustNewConstMetric(
+					c.BuildStatus,
+					prometheus.GaugeValue,
+					status,
+					labelsWithParams...,
+				)
+
+				labelsBuildResult := []string{
+					job.Path,
+					"", // id
+					"", // 分支
+					statusLabel,
+				}
+
+				ch <- prometheus.MustNewConstMetric(
+					c.BuildLastResult,
+					prometheus.GaugeValue,
+					1.0,
+					labelsBuildResult...,
+				)
+			} else {
+				labelsWithParams := []string{
+					job.Path,
+					"",
+					"",
+					"not_built",
+				}
+
+				ch <- prometheus.MustNewConstMetric(
+					c.BuildStatus,
+					prometheus.GaugeValue,
+					6.0,
+					labelsWithParams...,
+				)
+
+				labelsBuildResult := []string{
+					job.Path,
+					"",
+					"",
+					"not_built",
+				}
+
+				ch <- prometheus.MustNewConstMetric(
+					c.BuildLastResult,
+					prometheus.GaugeValue,
+					1.0,
+					labelsBuildResult...,
+				)
+			}
+
+			if job.LastCompletedBuild != nil {
+				ch <- prometheus.MustNewConstMetric(
+					c.LastCompletedBuild,
+					prometheus.GaugeValue,
+					float64(job.LastCompletedBuild.Number),
+					labels...,
+				)
+			}
+
+			if job.LastFailedBuild != nil {
+				ch <- prometheus.MustNewConstMetric(
+					c.LastFailedBuild,
+					prometheus.GaugeValue,
+					float64(job.LastFailedBuild.Number),
+					labels...,
+				)
+			}
+
+			if job.LastStableBuild != nil {
+				ch <- prometheus.MustNewConstMetric(
+					c.LastStableBuild,
+					prometheus.GaugeValue,
+					float64(job.LastStableBuild.Number),
+					labels...,
+				)
+			}
+
+			if job.LastUnstableBuild != nil {
+				ch <- prometheus.MustNewConstMetric(
+					c.LastUnstableBuild,
+					prometheus.GaugeValue,
+					float64(job.LastUnstableBuild.Number),
+					labels...,
+				)
+			}
+
+			processedCount++
+		}
 	}
 
 	c.logger.Info("作业指标收集完成",
