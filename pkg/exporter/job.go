@@ -31,7 +31,6 @@ type JobCollector struct {
 
 	Disabled           *prometheus.Desc
 	Buildable          *prometheus.Desc
-	Color              *prometheus.Desc
 	LastBuild          *prometheus.Desc
 	LastCompletedBuild *prometheus.Desc
 	LastFailedBuild    *prometheus.Desc
@@ -71,12 +70,6 @@ func NewJobCollector(logger *slog.Logger, client *jenkins.Client, failures *prom
 		Buildable: prometheus.NewDesc(
 			"jenkins_job_buildable",
 			"1 if the job is buildable, 0 otherwise",
-			labels,
-			nil,
-		),
-		Color: prometheus.NewDesc(
-			"jenkins_job_color",
-			"Color code of the jenkins job",
 			labels,
 			nil,
 		),
@@ -148,7 +141,6 @@ func (c *JobCollector) Metrics() []*prometheus.Desc {
 	return []*prometheus.Desc{
 		c.Disabled,
 		c.Buildable,
-		c.Color,
 		c.LastBuild,
 		c.LastCompletedBuild,
 		c.LastFailedBuild,
@@ -166,7 +158,6 @@ func (c *JobCollector) Metrics() []*prometheus.Desc {
 func (c *JobCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.Disabled
 	ch <- c.Buildable
-	ch <- c.Color
 	ch <- c.LastBuild
 	ch <- c.LastCompletedBuild
 	ch <- c.LastFailedBuild
@@ -507,13 +498,6 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 				labels...,
 			)
 
-			ch <- prometheus.MustNewConstMetric(
-				c.Color,
-				prometheus.GaugeValue,
-				colorToGauge(job.Color),
-				labels...,
-			)
-
 			if job.LastBuild != nil {
 				ch <- prometheus.MustNewConstMetric(
 					c.LastBuild,
@@ -730,13 +714,6 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 				labels...,
 			)
 
-			ch <- prometheus.MustNewConstMetric(
-				c.Color,
-				prometheus.GaugeValue,
-				colorToGauge(job.Color),
-				labels...,
-			)
-
 			if job.LastBuild != nil {
 				ch <- prometheus.MustNewConstMetric(
 					c.LastBuild,
@@ -870,41 +847,6 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 		"获取构建详情失败数", buildDetailsFailed,
 		"构建详情获取已启用", c.fetchBuildDetails,
 	)
-}
-
-func colorToGauge(color string) float64 {
-	switch color {
-	case "blue":
-		return 1.0
-	case "blue_anime":
-		return 1.5
-	case "red":
-		return 2.0
-	case "red_anime":
-		return 2.5
-	case "yellow":
-		return 3.0
-	case "yellow_anime":
-		return 3.5
-	case "notbuilt":
-		return 4.0
-	case "notbuilt_anime":
-		return 4.5
-	case "disabled":
-		return 5.0
-	case "disabled_anime":
-		return 5.5
-	case "aborted":
-		return 6.0
-	case "aborted_anime":
-		return 6.5
-	case "grey":
-		return 7.0
-	case "grey_anime":
-		return 7.5
-	}
-
-	return 0.0
 }
 
 // extractParameter extracts a parameter value from build actions.
