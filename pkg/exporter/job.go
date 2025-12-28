@@ -39,7 +39,6 @@ type JobCollector struct {
 	LastSuccessfulBuild   *prometheus.Desc
 	LastUnstableBuild     *prometheus.Desc
 	LastUnsuccessfulBuild *prometheus.Desc
-	NextBuild             *prometheus.Desc
 	Duration              *prometheus.Desc
 	StartTime             *prometheus.Desc
 	EndTime               *prometheus.Desc
@@ -58,7 +57,7 @@ func NewJobCollector(logger *slog.Logger, client *jenkins.Client, failures *prom
 	}
 
 	labels := []string{"job_name"} // job_name 就是 job 的完整路径，不需要 name 和 class
-	labelsWithParams := []string{"job_name", "check_commitID", "gitBranch"}
+	labelsWithParams := []string{"job_name", "check_commitID", "gitBranch", "status"} // 添加 status 标签
 	return &JobCollector{
 		client:            client,
 		logger:            logger.With("collector", "job"),
@@ -126,12 +125,6 @@ func NewJobCollector(logger *slog.Logger, client *jenkins.Client, failures *prom
 		LastUnsuccessfulBuild: prometheus.NewDesc(
 			"jenkins_job_last_unsuccessful_build",
 			"Builder number for last unsuccessful build",
-			labels,
-			nil,
-		),
-		NextBuild: prometheus.NewDesc(
-			"jenkins_job_next_build_number",
-			"Next build number for the job",
 			labels,
 			nil,
 		),
@@ -205,7 +198,6 @@ func (c *JobCollector) Metrics() []*prometheus.Desc {
 		c.LastSuccessfulBuild,
 		c.LastUnstableBuild,
 		c.LastUnsuccessfulBuild,
-		c.NextBuild,
 		c.Duration,
 		c.StartTime,
 		c.EndTime,
@@ -230,7 +222,6 @@ func (c *JobCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.LastSuccessfulBuild
 	ch <- c.LastUnstableBuild
 	ch <- c.LastUnsuccessfulBuild
-	ch <- c.NextBuild
 	ch <- c.Duration
 	ch <- c.StartTime
 	ch <- c.EndTime
@@ -565,11 +556,34 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 				gitBranch = ""     // 无法获取
 			}
 
+			// 根据状态值确定 status 标签
+			var statusLabel string
+			var success, failure, aborted, waiting, inProgress float64
+			if status == 0.0 {
+				statusLabel = "success"
+				success = 1.0
+			} else if status == 1.0 {
+				statusLabel = "failure"
+				failure = 1.0
+			} else if status == 2.0 {
+				statusLabel = "aborted"
+				aborted = 1.0
+			} else if status == 4.0 {
+				statusLabel = "in_progress"
+				inProgress = 1.0
+			} else if status == 5.0 {
+				statusLabel = "waiting"
+				waiting = 1.0
+			} else {
+				statusLabel = "not_built"
+			}
+
 			// 导出构建状态指标（无论是否获取到构建详情）
 			labelsWithParams := []string{
-				job.Path, // path 就是 jobname，不需要 name 和 class
+				job.Path,    // path 就是 jobname，不需要 name 和 class
 				checkCommitID,
 				gitBranch,
+				statusLabel, // 添加 status 标签
 			}
 
 			ch <- prometheus.MustNewConstMetric(
@@ -580,19 +594,6 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 			)
 
 			// 导出5种独立的状态指标（0或1）
-			var success, failure, aborted, waiting, inProgress float64
-			if status == 0.0 {
-				success = 1.0
-			} else if status == 1.0 {
-				failure = 1.0
-			} else if status == 2.0 {
-				aborted = 1.0
-			} else if status == 4.0 {
-				inProgress = 1.0
-			} else if status == 5.0 {
-				waiting = 1.0
-			}
-
 			ch <- prometheus.MustNewConstMetric(
 				c.BuildSuccess,
 				prometheus.GaugeValue,
@@ -631,9 +632,10 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 			// 如果没有 LastBuild，仍然导出构建状态（未构建状态）
 			// 使用空参数值
 			labelsWithParams := []string{
-				job.Path, // path 就是 jobname，不需要 name 和 class
-				"",       // check_commitID
-				"",       // gitBranch
+				job.Path,    // path 就是 jobname，不需要 name 和 class
+				"",          // check_commitID
+				"",          // gitBranch
+				"not_built", // status 标签
 			}
 
 			ch <- prometheus.MustNewConstMetric(
@@ -733,13 +735,6 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 				labels...,
 			)
 		}
-
-		ch <- prometheus.MustNewConstMetric(
-			c.NextBuild,
-			prometheus.GaugeValue,
-			float64(job.NextBuildNumber),
-			labels...,
-		)
 
 		processedCount++
 	}
