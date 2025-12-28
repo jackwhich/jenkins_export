@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 const (
@@ -24,6 +25,7 @@ type Client struct {
 	endpoint   string
 	username   string
 	password   string
+	timeout    time.Duration
 
 	Job JobClient
 }
@@ -71,6 +73,14 @@ func WithPassword(password string) ClientOption {
 	}
 }
 
+// WithTimeout configures a Client to use the specified timeout for HTTP requests.
+func WithTimeout(timeout time.Duration) ClientOption {
+	return func(client *Client) error {
+		client.timeout = timeout
+		return nil
+	}
+}
+
 // NewClient creates a new client.
 func NewClient(options ...ClientOption) (*Client, error) {
 	client := &Client{
@@ -90,7 +100,13 @@ func NewClient(options ...ClientOption) (*Client, error) {
 			return nil, err
 		}
 
+		timeout := client.timeout
+		if timeout == 0 {
+			timeout = 30 * time.Second // 默认30秒超时
+		}
+
 		client.httpClient = &http.Client{
+			Timeout: timeout,
 			Transport: &http.Transport{
 				Proxy: http.ProxyFromEnvironment,
 				TLSClientConfig: &tls.Config{

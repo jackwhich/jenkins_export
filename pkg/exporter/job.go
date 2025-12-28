@@ -202,11 +202,18 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 		return
 	}
 
-	c.logger.Debug("Fetched jobs",
+	c.logger.Info("Fetched jobs",
 		"count", len(jobs),
 	)
 
-	for _, job := range jobs {
+	for i, job := range jobs {
+		// 每处理10个作业记录一次进度
+		if i > 0 && i%10 == 0 {
+			c.logger.Debug("Processing jobs",
+				"progress", fmt.Sprintf("%d/%d", i, len(jobs)),
+				"current", job.Path,
+			)
+		}
 		var (
 			disabled  float64
 			buildable float64
@@ -255,12 +262,46 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 				labels...,
 			)
 
-			build, err := c.client.Job.Build(ctx, job.LastBuild)
+			// 为获取构建详情创建更短的超时上下文（最多10秒）
+			buildCtx, buildCancel := context.WithTimeout(ctx, 10*time.Second)
+			build, err := c.client.Job.Build(buildCtx, job.LastBuild)
+			buildCancel()
 
 			if err != nil {
-				c.logger.Error("Failed to fetch last build",
+				c.logger.Debug("Failed to fetch last build, skipping build details",
 					"job", job.Path,
 					"err", err,
+				)
+
+				// 即使获取构建详情失败，也导出构建状态（使用作业信息）
+				labelsWithParams := []string{
+					job.Name,
+					job.Path,
+					job.Class,
+					"", // check_commitID - 无法获取
+					"", // gitBranch - 无法获取
+				}
+
+				// 根据作业颜色推断状态
+				var status float64
+				switch job.Color {
+				case "blue", "blue_anime":
+					status = 0.0 // success
+				case "red", "red_anime":
+					status = 1.0 // failure
+				case "aborted", "aborted_anime":
+					status = 2.0 // aborted
+				case "yellow", "yellow_anime":
+					status = 3.0 // unstable
+				default:
+					status = 6.0 // not_built
+				}
+
+				ch <- prometheus.MustNewConstMetric(
+					c.BuildStatus,
+					prometheus.GaugeValue,
+					status,
+					labelsWithParams...,
 				)
 
 				c.failures.WithLabelValues("job").Inc()

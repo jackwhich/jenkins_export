@@ -53,6 +53,7 @@ func Server(cfg *config.Config, logger *slog.Logger) error {
 		jenkins.WithEndpoint(cfg.Target.Address),
 		jenkins.WithUsername(username),
 		jenkins.WithPassword(password),
+		jenkins.WithTimeout(cfg.Target.Timeout),
 	)
 
 	if err != nil {

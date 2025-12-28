@@ -96,6 +96,7 @@ func (c *JobClient) recursiveFolders(ctx context.Context, folders []Folder) ([]J
 				result = append(result, nextResult...)
 			}
 		default:
+			// 这是一个作业，不是文件夹
 			url := strings.TrimRight(folder.URL, "/")
 			req, err := c.client.NewRequest(ctx, "GET", fmt.Sprintf("%s/api/json", url), nil)
 
