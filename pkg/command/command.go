@@ -162,11 +162,12 @@ func RootFlags(cfg *config.Config) []cli.Flag {
 			Sources:     cli.EnvVars("JENKINS_EXPORTER_COLLECTOR_JOBS_CACHE_TTL"),
 			Destination: &cfg.Collector.CacheTTL,
 		},
-		&cli.StringSliceFlag{
+		&cli.StringFlag{
 			Name:        "collector.jobs.folders",
-			Usage:       "Folders to collect jobs from. Can be specified multiple times. If empty, collect from all folders. Example: --collector.jobs.folders=uat --collector.jobs.folders=pro",
+			Value:       "",
+			Usage:       "Folders to collect jobs from, separated by commas. If empty, collect from all folders. Example: --collector.jobs.folders=uat,pro,prod-gray-ebpay",
 			Sources:     cli.EnvVars("JENKINS_EXPORTER_COLLECTOR_JOBS_FOLDERS"),
-			Destination: &cfg.Collector.Folders,
+			Destination: &cfg.Collector.FoldersStr,
 		},
 	}
 }

@@ -145,9 +145,29 @@ func handler(cfg *config.Config, logger *slog.Logger, client *jenkins.Client) *c
 	}
 
 	if cfg.Collector.Jobs {
-		logger.Info("已注册作业收集器",
-			"获取构建详情", cfg.Collector.FetchBuildDetails,
-		)
+		// 解析逗号分隔的文件夹字符串
+		var folders []string
+		if cfg.Collector.FoldersStr != "" {
+			parts := strings.Split(cfg.Collector.FoldersStr, ",")
+			for _, part := range parts {
+				trimmed := strings.TrimSpace(part)
+				if trimmed != "" {
+					folders = append(folders, trimmed)
+				}
+			}
+		}
+
+		if len(folders) > 0 {
+			logger.Info("已注册作业收集器",
+				"获取构建详情", cfg.Collector.FetchBuildDetails,
+				"指定文件夹", folders,
+			)
+		} else {
+			logger.Info("已注册作业收集器",
+				"获取构建详情", cfg.Collector.FetchBuildDetails,
+				"说明", "将获取所有文件夹下的作业",
+			)
+		}
 
 		jobCollector := exporter.NewJobCollector(
 			logger,
@@ -158,7 +178,7 @@ func handler(cfg *config.Config, logger *slog.Logger, client *jenkins.Client) *c
 			cfg.Collector.FetchBuildDetails,
 			cfg.Collector.CacheFile,
 			cfg.Collector.CacheTTL,
-			cfg.Collector.Folders,
+			folders,
 		)
 
 		// 在启动时初始化缓存文件

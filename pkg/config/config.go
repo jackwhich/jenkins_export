@@ -37,7 +37,7 @@ type Collector struct {
 	FetchBuildDetails bool // 是否获取构建详情（包括参数），默认true
 	CacheFile      string // 缓存文件路径，如果为空则不使用缓存
 	CacheTTL       time.Duration // 缓存过期时间，默认5分钟
-	Folders        []string // 要获取的文件夹列表，如果为空则获取所有文件夹
+	FoldersStr     string // 要获取的文件夹列表（逗号分隔），如果为空则获取所有文件夹
 }
 
 // Config is a combination of all available configurations.
