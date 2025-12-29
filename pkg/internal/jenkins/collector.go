@@ -90,9 +90,9 @@ func isExcludedFolder(jobName string) bool {
 	excludedFolders := map[string]bool{
 		"prod-ebpay-new":  true,
 		"pre-ebpay-new":   true,
-		"prod-gray-ebpay":  true,
+		"prod-gray-ebpay": true,
 	}
-	
+
 	// 检查 job 路径的第一部分（顶层文件夹）是否在排除列表中
 	parts := strings.Split(jobName, "/")
 	if len(parts) > 0 {
