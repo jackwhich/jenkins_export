@@ -120,10 +120,15 @@ func (c *BuildCollector) Start(ctx context.Context, interval time.Duration) erro
 
 	for i := 0; i < int(maxWaitTime/checkInterval); i++ {
 		jobs, err := c.repo.ListEnabledJobs()
-		if err == nil && len(jobs) > 0 {
+		jobCount := 0
+		if err == nil {
+			jobCount = len(jobs)
+		}
+		
+		if jobCount > 0 {
 			elapsed := time.Since(startTime)
 			c.logger.Info("Discovery 已完成首次同步",
-				"job 数量", len(jobs),
+				"job 数量", jobCount,
 				"等待时间", elapsed,
 			)
 			waited = true
@@ -131,12 +136,21 @@ func (c *BuildCollector) Start(ctx context.Context, interval time.Duration) erro
 		}
 
 		elapsed := time.Since(startTime)
-		// 每 30 秒输出一次等待进度
+		// 每 30 秒输出一次等待进度，显示当前已获取的 job 数量
 		if i > 0 && i%6 == 0 {
-			c.logger.Info("等待 Discovery 同步中...",
-				"已等待", elapsed,
-				"说明", "Discovery 正在从 Jenkins 获取 job 列表，请稍候...",
-			)
+			if jobCount > 0 {
+				c.logger.Info("等待 Discovery 同步中...",
+					"已等待", elapsed,
+					"当前已获取 job 数量", jobCount,
+					"说明", fmt.Sprintf("Discovery 正在从 Jenkins 获取 job 列表，已获取 %d 个 job，请稍候...", jobCount),
+				)
+			} else {
+				c.logger.Info("等待 Discovery 同步中...",
+					"已等待", elapsed,
+					"当前已获取 job 数量", 0,
+					"说明", "Discovery 正在从 Jenkins 获取 job 列表，请稍候...",
+				)
+			}
 		}
 
 		select {
