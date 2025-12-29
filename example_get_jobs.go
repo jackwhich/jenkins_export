@@ -73,29 +73,32 @@ func main() {
 	folderName := "prod-gray-ebpay"
 	fmt.Printf("正在获取文件夹: %s\n", folderName)
 
+	// 声明变量在外部作用域，以便后续方法使用
+	var allJobsInFolder []*gojenkins.Job
+
 	folderJob, err := jenkins.GetJob(ctx, folderName) // SDK 方法
 	if err != nil {
 		fmt.Printf("⚠️  获取文件夹失败: %v\n", err)
 		fmt.Println("跳过方法2，继续执行其他方法...")
 	} else {
 		fmt.Printf("✅ 成功获取文件夹: %s\n", folderName)
-
+		
 		// 显示文件夹信息
 		if folderJob.Raw != nil {
 			fmt.Printf("文件夹类型: %s\n", folderJob.Raw.Class)
 		}
-
+		
 		// 递归获取文件夹下的所有 job
 		fmt.Println("开始递归获取文件夹下的所有 job...")
 		fmt.Println("提示: 如果 job 很多，可能需要较长时间，请耐心等待...")
-		allJobsInFolder := getAllJobsRecursive(ctx, folderJob, 0)
-
+		allJobsInFolder = getAllJobsRecursive(ctx, folderJob, 0)
+		
 		// 检查是否超时
 		if ctx.Err() == context.DeadlineExceeded {
 			fmt.Printf("\n⚠️  操作超时！已获取到 %d 个 job（可能还有更多）\n", len(allJobsInFolder))
 			fmt.Println("建议: 增加超时时间或分批处理")
 		}
-
+		
 		fmt.Printf("\n文件夹 %s 下共有 %d 个 job:\n", folderName, len(allJobsInFolder))
 		if len(allJobsInFolder) > 0 {
 			// 显示所有 job（不限制数量）
