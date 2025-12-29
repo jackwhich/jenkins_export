@@ -72,21 +72,30 @@ func StartDiscovery(ctx context.Context, client *Client, repo *storage.JobRepo, 
 
 // syncJobsOnce performs a single synchronization of jobs from Jenkins to SQLite.
 func syncJobsOnce(ctx context.Context, client *Client, repo *storage.JobRepo, folders []string, logger *slog.Logger) error {
-	logger.Debug("开始同步 Job 列表",
+	logger.Info("开始同步 Job 列表",
 		"指定文件夹", folders,
+		"说明", "正在从 Jenkins 获取 job 列表并同步到 SQLite 数据库",
 	)
 
 	// 初始化 SDK（如果尚未初始化）
+	logger.Info("正在初始化 Jenkins SDK...")
 	if err := client.InitSDK(logger); err != nil {
 		return fmt.Errorf("failed to initialize SDK: %w", err)
 	}
+	logger.Info("Jenkins SDK 初始化成功")
 
 	// 使用 SDK 递归获取所有 job（包括文件夹下的所有 job）
 	// 返回 job 列表和路径映射（因为 gojenkins.Job.GetName() 可能只返回相对名称）
+	logger.Info("正在从 Jenkins 获取 job 列表（递归获取所有文件夹下的 job）...")
 	sdkJobs, jobPathMap, err := client.SDK.GetAllJobsRecursive(ctx, folders, logger)
 	if err != nil {
 		return fmt.Errorf("failed to get jobs from Jenkins SDK: %w", err)
 	}
+	
+	logger.Info("从 Jenkins 获取到 job 列表",
+		"原始 job 数量", len(sdkJobs),
+		"说明", "正在过滤文件夹和排除的文件夹...",
+	)
 
 	// 提取 job 名称（使用路径映射获取完整路径），并过滤掉排除的文件夹
 	excludedFolders := map[string]bool{
@@ -191,13 +200,13 @@ func syncJobsOnce(ctx context.Context, client *Client, repo *storage.JobRepo, fo
 	}
 	
 	if folderCount > 0 {
-		logger.Debug("在 Discovery 阶段过滤掉文件夹类型的 job",
+		logger.Info("过滤掉文件夹类型的 job",
 			"文件夹数量", folderCount,
 		)
 	}
 	
 	if excludedCount > 0 {
-		logger.Debug("过滤掉排除的文件夹下的 job",
+		logger.Info("过滤掉排除的文件夹下的 job",
 			"排除数量", excludedCount,
 			"剩余数量", len(jobNames),
 		)
@@ -206,13 +215,18 @@ func syncJobsOnce(ctx context.Context, client *Client, repo *storage.JobRepo, fo
 	if len(jobNames) == 0 {
 		logger.Warn("从 Jenkins 获取到的 job 列表为空",
 			"指定文件夹", folders,
+			"原始 job 数量", len(sdkJobs),
+			"过滤掉的文件夹数量", folderCount,
+			"过滤掉的排除文件夹数量", excludedCount,
+			"建议", "请检查 Jenkins 连接、文件夹配置或排除文件夹配置",
 		)
 		return nil
 	}
 
-	logger.Debug("从 Jenkins 获取到 job 列表",
-		"job 数量", len(jobNames),
+	logger.Info("准备同步到 SQLite 数据库",
+		"有效 job 数量", len(jobNames),
 		"指定文件夹", folders,
+		"说明", "将新增、更新或软删除 job 记录",
 	)
 
 	// 同步到 SQLite
@@ -220,10 +234,21 @@ func syncJobsOnce(ctx context.Context, client *Client, repo *storage.JobRepo, fo
 		return fmt.Errorf("failed to sync jobs to SQLite: %w", err)
 	}
 
+	// 获取同步后的统计信息（从数据库读取实际数量）
+	enabledJobs, err := repo.ListEnabledJobs()
+	enabledCount := 0
+	if err == nil {
+		enabledCount = len(enabledJobs)
+	}
+
 	logger.Info("Job 列表同步完成",
-		"job 数量", len(jobNames),
+		"从 Jenkins 获取", len(sdkJobs),
+		"有效 job 数量", len(jobNames),
+		"数据库中的启用 job 数量", enabledCount,
+		"过滤掉的文件夹", folderCount,
+		"过滤掉的排除文件夹", excludedCount,
 		"指定文件夹", folders,
-		"使用方式", "SDK（递归获取文件夹下的所有 job）",
+		"说明", "数据库已更新，Collector 可以开始采集这些 job 的构建信息",
 	)
 
 	return nil

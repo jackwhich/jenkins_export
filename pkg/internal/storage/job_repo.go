@@ -194,11 +194,12 @@ func (r *JobRepo) SyncJobs(jobNames []string) error {
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
-	r.logger.Info("Job 列表同步完成",
+	r.logger.Info("Job 列表同步到数据库完成",
 		"新增", addedCount,
-		"删除", deletedCount,
+		"软删除", deletedCount,
 		"更新", updatedCount,
-		"总计", len(jobNames),
+		"本次同步的 job 数量", len(jobNames),
+		"说明", fmt.Sprintf("新增=%d 表示新发现的 job，软删除=%d 表示从 Jenkins 中移除的 job，更新=%d 表示已存在的 job 更新了同步时间", addedCount, deletedCount, updatedCount),
 	)
 
 	return nil
