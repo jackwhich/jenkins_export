@@ -20,5 +20,13 @@ jenkins_exporter_test
 # Python 示例脚本（不提交到 Git）
 python_examples/
 
+# 测试脚本（不提交到 Git）
+test_data.py
+test-db.py
+test_db.py
+
+# 测试脚本（不提交到 Git）
+test_sdk_job.go
+
 # 编译输出目录
 dist/
