@@ -15,7 +15,7 @@ func main() {
 	// 1. 创建 Jenkins 客户端
 	// ⚠️ 请修改为你的 Jenkins 连接信息
 	jenkinsURL := "http://jenkins.example.com" // 改为你的 Jenkins URL
-	username := "your_username"                 // 改为你的用户名
+	username := "your_username"                // 改为你的用户名
 	password := "your_password"                // 改为你的密码
 
 	// 或者从环境变量读取
@@ -82,23 +82,23 @@ func main() {
 		fmt.Println("跳过方法2，继续执行其他方法...")
 	} else {
 		fmt.Printf("✅ 成功获取文件夹: %s\n", folderName)
-		
+
 		// 显示文件夹信息
 		if folderJob.Raw != nil {
 			fmt.Printf("文件夹类型: %s\n", folderJob.Raw.Class)
 		}
-		
+
 		// 递归获取文件夹下的所有 job
 		fmt.Println("开始递归获取文件夹下的所有 job...")
 		fmt.Println("提示: 如果 job 很多，可能需要较长时间，请耐心等待...")
 		allJobsInFolder = getAllJobsRecursive(ctx, folderJob, 0)
-		
+
 		// 检查是否超时
 		if ctx.Err() == context.DeadlineExceeded {
 			fmt.Printf("\n⚠️  操作超时！已获取到 %d 个 job（可能还有更多）\n", len(allJobsInFolder))
 			fmt.Println("建议: 增加超时时间或分批处理")
 		}
-		
+
 		fmt.Printf("\n文件夹 %s 下共有 %d 个 job:\n", folderName, len(allJobsInFolder))
 		if len(allJobsInFolder) > 0 {
 			// 显示所有 job（不限制数量）
@@ -113,7 +113,7 @@ func main() {
 	// 6. 获取指定 job 的详细信息
 	fmt.Println("\n=== 方法3: 获取指定 job 的详细信息 ===")
 	fmt.Println("使用 SDK 方法: jenkins.GetJob()")
-	
+
 	// 从方法2获取的job列表中取一个来测试
 	if len(allJobsInFolder) > 0 {
 		// 使用第一个job来测试
@@ -139,7 +139,7 @@ func main() {
 	} else {
 		fmt.Println("⚠️  方法2没有获取到job，跳过方法3")
 	}
-	
+
 	// 原来的测试代码（如果方法2失败时使用）
 	if len(allJobsInFolder) == 0 {
 		specificJobName := "prod-gray-ebpay/gray-prod-mkt-thirdpart-api"
@@ -163,7 +163,7 @@ func main() {
 		fmt.Println("\n=== 方法4: 获取 job 的最后一次构建 ===")
 		testJob := allJobsInFolder[0]
 		fmt.Printf("使用 job: %s\n", testJob.GetName())
-		
+
 		lastBuild, err := testJob.GetLastCompletedBuild(ctx)
 		if err != nil {
 			fmt.Printf("⚠️  获取最后构建失败: %v\n", err)

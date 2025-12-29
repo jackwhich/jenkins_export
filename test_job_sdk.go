@@ -14,13 +14,13 @@ import (
 
 func main() {
 	var (
-		jenkinsURL  = flag.String("url", "", "Jenkins URL (required)")
-		username    = flag.String("user", "", "Jenkins username")
-		password    = flag.String("pass", "", "Jenkins password")
-		folderName  = flag.String("folder", "", "Folder name to get jobs from (optional)")
-		jobName     = flag.String("job", "", "Specific job name to get (optional)")
-		recursive   = flag.Bool("recursive", true, "Recursively get all jobs from folders")
-		timeout     = flag.Duration("timeout", 30*time.Second, "Request timeout")
+		jenkinsURL = flag.String("url", "", "Jenkins URL (required)")
+		username   = flag.String("user", "", "Jenkins username")
+		password   = flag.String("pass", "", "Jenkins password")
+		folderName = flag.String("folder", "", "Folder name to get jobs from (optional)")
+		jobName    = flag.String("job", "", "Specific job name to get (optional)")
+		recursive  = flag.Bool("recursive", true, "Recursively get all jobs from folders")
+		timeout    = flag.Duration("timeout", 30*time.Second, "Request timeout")
 	)
 	flag.Parse()
 
@@ -205,4 +205,3 @@ func printJobInfo(job *gojenkins.Job, depth int) {
 		fmt.Printf("%s最后构建: 无\n", indent)
 	}
 }
-
