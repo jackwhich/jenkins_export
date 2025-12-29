@@ -322,6 +322,13 @@ func (c *BuildCollector) processJob(ctx context.Context, job storage.Job) (*Proc
 	}
 
 	// 使用 SDK 获取 job 的 lastCompletedBuild
+	// job.JobName 应该是完整路径（从 SQLite 读取的，由 Discovery 阶段使用 job.GetName() 获取的完整路径）
+	// 例如："folder/job" 或 "folder/subfolder/job"，如果是顶层 job 就是 "job"
+	c.logger.Debug("使用完整路径获取构建信息",
+		"job_name", job.JobName,
+		"说明", "使用从 SQLite 读取的完整路径（由 Discovery 阶段使用 job.GetName() 获取）",
+	)
+
 	sdkBuild, buildNumber, err := c.client.SDK.GetLastCompletedBuild(ctx, job.JobName)
 	if err != nil {
 		// 如果是 context canceled，直接返回，不包装错误

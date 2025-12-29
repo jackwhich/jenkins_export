@@ -48,9 +48,19 @@ var excludedFolders = map[string]bool{
 	"prod-gray-ebpay":  true,
 }
 
+// JobWithPath wraps a gojenkins.Job with its full path.
+// This is needed because gojenkins.Job.GetName() may return relative names for nested jobs.
+type JobWithPath struct {
+	Job     *gojenkins.Job
+	FullPath string
+}
+
 // GetAllJobsRecursive recursively gets all jobs from specified folders, filtering out folder-type jobs.
-func (c *SDKClient) GetAllJobsRecursive(ctx context.Context, folderNames []string, logger *slog.Logger) ([]*gojenkins.Job, error) {
+// Returns jobs and a map of job to full path (e.g., "folder/job").
+// The path map is needed because gojenkins.Job.GetName() may return relative names for nested jobs.
+func (c *SDKClient) GetAllJobsRecursive(ctx context.Context, folderNames []string, logger *slog.Logger) ([]*gojenkins.Job, map[*gojenkins.Job]string, error) {
 	allJobs := make([]*gojenkins.Job, 0)
+	jobPathMap := make(map[*gojenkins.Job]string)
 
 	// 如果没有指定文件夹，获取根目录下的所有内容
 	if len(folderNames) == 0 {
@@ -59,7 +69,7 @@ func (c *SDKClient) GetAllJobsRecursive(ctx context.Context, folderNames []strin
 		// 所以我们需要手动递归处理每个 job
 		rootJobs, err := c.jenkins.GetAllJobs(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("failed to get root jobs: %w", err)
+			return nil, nil, fmt.Errorf("failed to get root jobs: %w", err)
 		}
 
 		logger.Debug("获取到根目录下的顶层 job",
@@ -70,7 +80,7 @@ func (c *SDKClient) GetAllJobsRecursive(ctx context.Context, folderNames []strin
 		for i, job := range rootJobs {
 			// 检查 context 是否已取消
 			if ctx.Err() != nil {
-				return allJobs, ctx.Err()
+				return allJobs, jobPathMap, ctx.Err()
 			}
 
 			jobName := job.GetName()
@@ -89,11 +99,14 @@ func (c *SDKClient) GetAllJobsRecursive(ctx context.Context, folderNames []strin
 				"job_name", jobName,
 			)
 
-			jobs, err := c.recursiveGetJobs(ctx, job, logger)
+			// 记录顶层 job 的路径
+			jobPathMap[job] = jobName
+			
+			jobs, paths, err := c.recursiveGetJobsWithPathMap(ctx, job, jobName, jobPathMap, logger)
 			if err != nil {
 				// 如果是 context canceled，直接返回
 				if errors.Is(err, context.Canceled) || ctx.Err() == context.Canceled {
-					return allJobs, err
+					return allJobs, jobPathMap, err
 				}
 				logger.Warn("递归获取 job 失败",
 					"job_name", jobName,
@@ -102,6 +115,10 @@ func (c *SDKClient) GetAllJobsRecursive(ctx context.Context, folderNames []strin
 				continue
 			}
 			allJobs = append(allJobs, jobs...)
+			// 合并路径映射
+			for k, v := range paths {
+				jobPathMap[k] = v
+			}
 		}
 	} else {
 		// 如果指定了文件夹，只处理这些文件夹
@@ -116,8 +133,11 @@ func (c *SDKClient) GetAllJobsRecursive(ctx context.Context, folderNames []strin
 				continue
 			}
 
+			// 记录文件夹的路径
+			jobPathMap[folderJob] = folderName
+			
 			// 递归获取文件夹下的所有 job
-			jobs, err := c.recursiveGetJobs(ctx, folderJob, logger)
+			jobs, paths, err := c.recursiveGetJobsWithPathMap(ctx, folderJob, folderName, jobPathMap, logger)
 			if err != nil {
 				logger.Warn("递归获取文件夹下的 job 失败",
 					"folder_name", folderName,
@@ -126,6 +146,10 @@ func (c *SDKClient) GetAllJobsRecursive(ctx context.Context, folderNames []strin
 				continue
 			}
 			allJobs = append(allJobs, jobs...)
+			// 合并路径映射
+			for k, v := range paths {
+				jobPathMap[k] = v
+			}
 		}
 	}
 
@@ -134,14 +158,17 @@ func (c *SDKClient) GetAllJobsRecursive(ctx context.Context, folderNames []strin
 		"指定文件夹", folderNames,
 	)
 
-	return allJobs, nil
+	return allJobs, jobPathMap, nil
 }
 
-// recursiveGetJobs recursively gets all jobs from a job (which might be a folder).
-func (c *SDKClient) recursiveGetJobs(ctx context.Context, job *gojenkins.Job, logger *slog.Logger) ([]*gojenkins.Job, error) {
+// recursiveGetJobsWithPathMap recursively gets all jobs and tracks their full paths.
+// This ensures we always use the full path (folder/job) instead of just job name.
+func (c *SDKClient) recursiveGetJobsWithPathMap(ctx context.Context, job *gojenkins.Job, fullPath string, jobPathMap map[*gojenkins.Job]string, logger *slog.Logger) ([]*gojenkins.Job, map[*gojenkins.Job]string, error) {
 	allJobs := make([]*gojenkins.Job, 0)
 
-	jobName := job.GetName()
+	jobName := fullPath // 使用传入的完整路径
+	// 记录当前 job 的完整路径
+	jobPathMap[job] = fullPath
 	
 	// 检查是否是排除的文件夹（检查完整路径中的任何部分）
 	// 例如：如果 jobName 是 "prod-gray-ebpay/some-job"，需要检查路径的第一部分
@@ -153,7 +180,7 @@ func (c *SDKClient) recursiveGetJobs(ctx context.Context, job *gojenkins.Job, lo
 				"job_name", jobName,
 				"顶层文件夹", topLevelFolder,
 			)
-			return allJobs, nil // 返回空列表，不递归处理
+			return allJobs, jobPathMap, nil // 返回空列表，不递归处理
 		}
 	}
 
@@ -178,42 +205,78 @@ func (c *SDKClient) recursiveGetJobs(ctx context.Context, job *gojenkins.Job, lo
 				"folder_name", job.GetName(),
 				"error", err,
 			)
-			return allJobs, nil // 返回空列表，不中断
+			return allJobs, jobPathMap, nil // 返回空列表，不中断
 		}
 
 		logger.Debug("文件夹下的子项",
-			"folder_name", job.GetName(),
+			"folder_name", fullPath,
 			"子项数量", len(subJobs),
 		)
 
 		// 递归处理每个子项
+		parentName := fullPath // 使用完整路径作为父路径
 		for _, subJob := range subJobs {
 			// 检查 context 是否已取消
 			if ctx.Err() != nil {
-				return allJobs, ctx.Err()
+				return allJobs, jobPathMap, ctx.Err()
 			}
 
-			jobs, err := c.recursiveGetJobs(ctx, subJob, logger)
+			subJobName := subJob.GetName()
+			// 构建完整路径：如果子 job 的名称不包含父路径，则拼接
+			// gojenkins SDK 的 GetName() 可能返回相对名称，需要拼接父路径
+			var fullSubJobName string
+			if strings.Contains(subJobName, "/") {
+				// 如果已经包含路径分隔符，说明是完整路径
+				fullSubJobName = subJobName
+			} else {
+				// 如果不包含路径分隔符，需要拼接父路径
+				fullSubJobName = parentName + "/" + subJobName
+			}
+
+			logger.Debug("处理子 job",
+				"父路径", parentName,
+				"子 job 名称", subJobName,
+				"完整路径", fullSubJobName,
+			)
+
+			// 递归处理子 job，传递完整路径
+			jobs, paths, err := c.recursiveGetJobsWithPathMap(ctx, subJob, fullSubJobName, jobPathMap, logger)
 			if err != nil {
 				// 如果是 context canceled，直接返回
 				if errors.Is(err, context.Canceled) || ctx.Err() == context.Canceled {
-					return allJobs, err
+					return allJobs, jobPathMap, err
 				}
 				logger.Debug("递归获取子 job 失败",
-					"parent", job.GetName(),
-					"child", subJob.GetName(),
+					"parent", parentName,
+					"child", subJobName,
+					"full_path", fullSubJobName,
 					"error", err,
 				)
 				continue
 			}
 			allJobs = append(allJobs, jobs...)
+			// 合并路径映射
+			for k, v := range paths {
+				jobPathMap[k] = v
+			}
 		}
 	} else {
 		// 如果不是文件夹，就是实际的构建 job，直接添加
+		// 注意：job 对象本身可能只包含相对名称，但我们使用 fullPath 作为完整路径
 		allJobs = append(allJobs, job)
+		jobPathMap[job] = fullPath
 	}
 
-	return allJobs, nil
+	return allJobs, jobPathMap, nil
+}
+
+// recursiveGetJobs recursively gets all jobs from a job (which might be a folder).
+// This is a wrapper that uses the job's GetName() and handles path construction.
+func (c *SDKClient) recursiveGetJobs(ctx context.Context, job *gojenkins.Job, logger *slog.Logger) ([]*gojenkins.Job, error) {
+	jobName := job.GetName()
+	jobPathMap := make(map[*gojenkins.Job]string)
+	jobs, _, err := c.recursiveGetJobsWithPathMap(ctx, job, jobName, jobPathMap, logger)
+	return jobs, err
 }
 
 // GetAllJobs returns all jobs recursively, optionally filtered by folder names.
@@ -321,18 +384,30 @@ func (c *SDKClient) GetAllJobs(ctx context.Context, folderNames []string) ([]*go
 // GetJobByFullName gets a job by its full name (e.g., "folder/job").
 func (c *SDKClient) GetJobByFullName(ctx context.Context, fullName string) (*gojenkins.Job, error) {
 	// gojenkins 的 GetJob 方法支持完整路径
+	// fullName 应该是完整路径，例如 "folder/job" 或 "folder/subfolder/job"
+	// 如果是顶层 job，fullName 就是 job 名称本身，例如 "job"
+	c.logger.Debug("使用完整路径获取 job",
+		"full_name", fullName,
+		"说明", "如果 job 在文件夹下，路径格式为 folder/job；如果是顶层 job，就是 job 名称本身",
+	)
+	
 	job, err := c.jenkins.GetJob(ctx, fullName)
 	if err != nil {
 		// 检查错误信息，判断是否是 HTML 响应（可能是认证失败、404、权限问题等）
 		errMsg := err.Error()
 		if strings.Contains(errMsg, "invalid character '<'") || strings.Contains(errMsg, "looking for beginning of value") {
-			// 可能是文件夹而不是实际的 job，或者权限问题
-			c.logger.Debug("获取 job 失败，可能是文件夹或权限问题",
+			// 可能是文件夹而不是实际的 job，或者权限问题，或者路径不正确
+			c.logger.Debug("获取 job 失败，可能是文件夹、权限问题或路径不正确",
 				"job_name", fullName,
 				"错误", errMsg,
+				"提示", "如果 job 在文件夹下，确保使用完整路径格式 folder/job",
 			)
 			return nil, fmt.Errorf("job %s 可能不存在、是文件夹或权限不足（返回了 HTML 而非 JSON）: %w", fullName, err)
 		}
+		c.logger.Debug("获取 job 失败",
+			"job_name", fullName,
+			"错误", errMsg,
+		)
 		return nil, fmt.Errorf("failed to get job %s: %w", fullName, err)
 	}
 

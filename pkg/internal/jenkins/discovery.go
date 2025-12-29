@@ -60,12 +60,13 @@ func syncJobsOnce(ctx context.Context, client *Client, repo *storage.JobRepo, fo
 	}
 
 	// 使用 SDK 递归获取所有 job（包括文件夹下的所有 job）
-	sdkJobs, err := client.SDK.GetAllJobsRecursive(ctx, folders, logger)
+	// 返回 job 列表和路径映射（因为 gojenkins.Job.GetName() 可能只返回相对名称）
+	sdkJobs, jobPathMap, err := client.SDK.GetAllJobsRecursive(ctx, folders, logger)
 	if err != nil {
 		return fmt.Errorf("failed to get jobs from Jenkins SDK: %w", err)
 	}
 
-	// 提取 job 名称（使用 GetName() 获取完整路径），并过滤掉排除的文件夹
+	// 提取 job 名称（使用路径映射获取完整路径），并过滤掉排除的文件夹
 	excludedFolders := map[string]bool{
 		"prod-ebpay-new":  true,
 		"pre-ebpay-new":   true,
@@ -75,10 +76,30 @@ func syncJobsOnce(ctx context.Context, client *Client, repo *storage.JobRepo, fo
 	jobNames := make([]string, 0, len(sdkJobs))
 	excludedCount := 0
 	for _, job := range sdkJobs {
-		fullName := job.GetName()
+		// 优先使用路径映射中的完整路径，如果没有则使用 GetName()
+		fullName := jobPathMap[job]
 		if fullName == "" {
+			// 如果路径映射中没有，尝试使用 GetName()
+			fullName = job.GetName()
+		}
+		
+		if fullName == "" {
+			logger.Debug("跳过空名称的 job",
+				"job_info", fmt.Sprintf("%+v", job),
+			)
 			continue
 		}
+		
+		// 记录 job 的完整路径信息（用于调试）
+		source := "GetName()"
+		if jobPathMap[job] != "" {
+			source = "路径映射"
+		}
+		logger.Debug("获取到 job 完整路径",
+			"full_name", fullName,
+			"来源", source,
+			"说明", "将存储到 SQLite。如果是文件夹下的 job，应该是完整路径 folder/job",
+		)
 		
 		// 检查是否是排除的文件夹下的 job
 		parts := strings.Split(fullName, "/")
