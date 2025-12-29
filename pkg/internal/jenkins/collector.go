@@ -235,6 +235,19 @@ func (c *BuildCollector) processJob(ctx context.Context, job storage.Job) (*Proc
 		if errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "context canceled") {
 			return nil, context.Canceled
 		}
+		
+		// 如果是文件夹或权限问题（返回 HTML 而非 JSON），记录为 DEBUG 并跳过
+		errMsg := err.Error()
+		if strings.Contains(errMsg, "文件夹") || strings.Contains(errMsg, "权限") || 
+		   strings.Contains(errMsg, "HTML") || strings.Contains(errMsg, "invalid character '<'") {
+			c.logger.Debug("跳过 job（可能是文件夹或权限问题）",
+				"job_name", job.JobName,
+				"错误", errMsg,
+			)
+			// 返回 nil, nil 表示跳过，不更新指标
+			return nil, nil
+		}
+		
 		return nil, fmt.Errorf("failed to get last completed build: %w", err)
 	}
 
