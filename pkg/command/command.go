@@ -176,5 +176,26 @@ func RootFlags(cfg *config.Config) []cli.Flag {
 			Sources:     cli.EnvVars("JENKINS_EXPORTER_COLLECTOR_JOBS_FOLDERS"),
 			Destination: &cfg.Collector.FoldersStr,
 		},
+		&cli.StringFlag{
+			Name:        "collector.jobs.sqlite-path",
+			Value:       "",
+			Usage:       "Path to SQLite database file. If empty, SQLite is disabled. Example: /var/lib/jenkins_exporter/jobs.db",
+			Sources:     cli.EnvVars("JENKINS_EXPORTER_COLLECTOR_JOBS_SQLITE_PATH"),
+			Destination: &cfg.Collector.SQLitePath,
+		},
+		&cli.DurationFlag{
+			Name:        "collector.jobs.discovery-interval",
+			Value:       5 * time.Minute,
+			Usage:       "Interval for job discovery (syncing job list from Jenkins to SQLite). Default: 5m",
+			Sources:     cli.EnvVars("JENKINS_EXPORTER_COLLECTOR_JOBS_DISCOVERY_INTERVAL"),
+			Destination: &cfg.Collector.DiscoveryInterval,
+		},
+		&cli.DurationFlag{
+			Name:        "collector.jobs.collector-interval",
+			Value:       15 * time.Second,
+			Usage:       "Interval for build collector (collecting build results). Default: 15s",
+			Sources:     cli.EnvVars("JENKINS_EXPORTER_COLLECTOR_JOBS_COLLECTOR_INTERVAL"),
+			Destination: &cfg.Collector.CollectorInterval,
+		},
 	}
 }

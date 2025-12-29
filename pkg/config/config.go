@@ -39,6 +39,11 @@ type Collector struct {
 	CacheTTL       time.Duration // 缓存过期时间，默认30分钟
 	CacheRefreshInterval time.Duration // 定时刷新缓存的间隔，如果为0则不启用定时刷新
 	FoldersStr     string // 要获取的文件夹列表（逗号分隔），如果为空则获取所有文件夹
+	
+	// SQLite 相关配置
+	SQLitePath     string // SQLite 数据库路径，如果为空则不使用 SQLite
+	DiscoveryInterval time.Duration // Job Discovery 同步间隔，默认5分钟
+	CollectorInterval time.Duration // Build Collector 采集间隔，默认15秒
 }
 
 // Config is a combination of all available configurations.

@@ -45,6 +45,48 @@ func (c *JobClient) Build(ctx context.Context, build *BuildNumber) (Build, error
 	return result, nil
 }
 
+// GetLastCompletedBuild returns the last completed build for a job by job name (full path).
+// Returns (build, buildNumber, nil) if found, or (nil, 0, nil) if no completed build exists.
+func (c *JobClient) GetLastCompletedBuild(ctx context.Context, jobName string) (*Build, int64, error) {
+	// 构建 job API URL
+	// jobName 格式可能是 "folder/job" 或 "folder/subfolder/job"
+	// 需要转换为 Jenkins API 路径格式：/job/folder/job/folder/job/...
+	pathParts := strings.Split(jobName, "/")
+	apiPath := ""
+	for _, part := range pathParts {
+		if part != "" {
+			apiPath += "/job/" + part
+		}
+	}
+
+	// 获取 job 信息
+	jobURL := fmt.Sprintf("%s%s/api/json", c.client.endpoint, apiPath)
+	req, err := c.client.NewRequest(ctx, "GET", jobURL, nil)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to create request for job %s: %w", jobName, err)
+	}
+
+	var job Job
+	if _, err := c.client.Do(req, &job); err != nil {
+		return nil, 0, fmt.Errorf("failed to get job %s: %w", jobName, err)
+	}
+
+	// 如果没有 lastCompletedBuild，返回 nil
+	if job.LastCompletedBuild == nil {
+		return nil, 0, nil
+	}
+
+	buildNumber := int64(job.LastCompletedBuild.Number)
+
+	// 获取构建详情
+	build, err := c.Build(ctx, job.LastCompletedBuild)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to get build details for job %s: %w", jobName, err)
+	}
+
+	return &build, buildNumber, nil
+}
+
 // All returns all available jobs.
 // If folders is not empty, only jobs from the specified folders will be returned.
 func (c *JobClient) All(ctx context.Context, folders []string) ([]Job, error) {
@@ -144,6 +186,7 @@ func (c *JobClient) recursiveFoldersParallel(ctx context.Context, folders []Fold
 
 			// 先尝试获取文件夹内容，检查是否有子文件夹或作业
 			// 这样可以处理所有类型的文件夹，不仅仅是 com.cloudbees.hudson.plugins.folder.Folder
+			// 注意：depth=1 只获取直接子项，不会递归获取所有层级
 			url := strings.TrimRight(f.URL, "/")
 			req, reqErr := c.client.NewRequest(ctx, "GET", fmt.Sprintf("%s/api/json?depth=1", url), nil)
 
@@ -180,10 +223,13 @@ func (c *JobClient) recursiveFoldersParallel(ctx context.Context, folders []Fold
 					// 检查 _class 字段判断是文件夹还是作业
 					// 如果是文件夹类型，递归处理其内容
 					// 如果是作业类型，直接获取作业
-					if nextFolder.Class == "com.cloudbees.hudson.plugins.folder.Folder" || 
-					   strings.Contains(nextFolder.Class, "Folder") {
+					isFolder := nextFolder.Class == "com.cloudbees.hudson.plugins.folder.Folder" || 
+					           strings.Contains(nextFolder.Class, "Folder")
+					
+					if isFolder {
 						// 这是文件夹，递归处理其内容
 						// 注意：Folders 字段映射自 JSON 的 "jobs" 字段，包含该文件夹下的所有内容（文件夹和作业）
+						// 即使文件夹为空，也要继续处理，因为可能有作业在下一层
 						if len(nextFolder.Folders) > 0 {
 							// 有子文件夹或作业，递归处理所有内容
 							jobs, err = c.recursiveFoldersParallel(ctx, nextFolder.Folders, maxConcurrency)
@@ -195,8 +241,11 @@ func (c *JobClient) recursiveFoldersParallel(ctx context.Context, folders []Fold
 								errMu.Unlock()
 							}
 						}
+						// 注意：如果文件夹为空（len(nextFolder.Folders) == 0），不处理任何内容
+						// 这是正常的，因为空文件夹下没有作业
 					} else {
 						// 这是作业，直接获取作业详情
+						// 即使 _class 不是明确的作业类型，只要不是文件夹，就当作作业处理
 						req, reqErr := c.client.NewRequest(ctx, "GET", fmt.Sprintf("%s/api/json", url), nil)
 						if reqErr != nil {
 							return // 跳过

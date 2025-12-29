@@ -255,7 +255,7 @@ func (c *JobCollector) saveJobsToCache(jobs []jenkins.Job) error {
 	// 使用原子写入：先写入临时文件，然后原子性地重命名
 	// 这样可以确保读取操作总是看到完整的文件，避免读取到不完整的数据
 	tmpFile := c.cacheFile + ".tmp"
-	
+
 	// 写入临时文件
 	if err := os.WriteFile(tmpFile, data, 0644); err != nil {
 		// 如果写入失败，尝试清理临时文件
@@ -428,7 +428,9 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 	folderJobCount := make(map[string]int)
 	// 统计所有作业路径的前缀，用于调试
 	jobPathPrefixes := make(map[string]int)
-	for _, job := range jobs {
+	// 统计所有作业路径，用于调试（只记录前20个，避免日志过长）
+	jobPaths := make([]string, 0)
+	for i, job := range jobs {
 		// job.Path 格式可能是 "uat/job-name" 或 "gray-uat-ebpay/gray-pre-asset-service-new"
 		parts := strings.Split(job.Path, "/")
 		if len(parts) > 0 {
@@ -439,6 +441,10 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 				prefix := parts[0] + "/" + parts[1]
 				jobPathPrefixes[prefix]++
 			}
+			// 记录前20个作业路径用于调试
+			if i < 20 {
+				jobPaths = append(jobPaths, job.Path)
+			}
 		}
 	}
 
@@ -448,6 +454,7 @@ func (c *JobCollector) Collect(ch chan<- prometheus.Metric) {
 		"说明", fmt.Sprintf("已递归遍历所有文件夹（/job/ 路径下），成功获取到 %d 个作业", len(jobs)),
 		"各顶层文件夹作业数", folderJobCount,
 		"作业路径前缀统计", jobPathPrefixes,
+		"前20个作业路径示例", jobPaths,
 	)
 
 	c.logger.Info("开始处理作业并导出指标",

@@ -17,6 +17,7 @@ import (
 	"github.com/promhippie/jenkins_exporter/pkg/config"
 	"github.com/promhippie/jenkins_exporter/pkg/exporter"
 	"github.com/promhippie/jenkins_exporter/pkg/internal/jenkins"
+	"github.com/promhippie/jenkins_exporter/pkg/internal/storage"
 	"github.com/promhippie/jenkins_exporter/pkg/middleware"
 	"github.com/promhippie/jenkins_exporter/pkg/version"
 )
@@ -77,9 +78,61 @@ func Server(cfg *config.Config, logger *slog.Logger) error {
 
 	var gr run.Group
 	var jobCollector *exporter.JobCollector
+	var buildCollector *jenkins.BuildCollector
+	var jobRepo *storage.JobRepo
 
-	// 如果启用了作业收集器，创建 jobCollector 并启动定时刷新任务
-	if cfg.Collector.Jobs {
+	// 如果启用了 SQLite，使用 SQLite 模式（推荐）
+	if cfg.Collector.Jobs && cfg.Collector.SQLitePath != "" {
+		logger.Info("正在初始化 SQLite 数据库",
+			"数据库路径", cfg.Collector.SQLitePath,
+		)
+
+		db, err := storage.NewSQLite(cfg.Collector.SQLitePath, logger)
+		if err != nil {
+			logger.Error("初始化 SQLite 数据库失败",
+				"错误", err,
+			)
+			return err
+		}
+
+		jobRepo = storage.NewJobRepo(db, logger)
+
+		// 解析文件夹列表
+		folders := jenkins.GetJobNamesFromFolders(cfg.Collector.FoldersStr)
+
+		// 启动 Job Discovery（低频同步）
+		discoveryCtx, discoveryCancel := context.WithCancel(context.Background())
+		gr.Add(func() error {
+			return jenkins.StartDiscovery(
+				discoveryCtx,
+				client,
+				jobRepo,
+				cfg.Collector.DiscoveryInterval,
+				folders,
+				logger,
+			)
+		}, func(_ error) {
+			discoveryCancel()
+		})
+
+		// 创建并启动 Build Collector（高频采集）
+		buildCollector = jenkins.NewBuildCollector(client, jobRepo, logger)
+		collectorCtx, collectorCancel := context.WithCancel(context.Background())
+		gr.Add(func() error {
+			return buildCollector.Start(collectorCtx, cfg.Collector.CollectorInterval)
+		}, func(_ error) {
+			collectorCancel()
+		})
+
+		logger.Info("SQLite 模式已启用",
+			"Discovery 间隔", cfg.Collector.DiscoveryInterval,
+			"Collector 间隔", cfg.Collector.CollectorInterval,
+		)
+	} else if cfg.Collector.Jobs {
+		// 传统模式：使用 JSON 缓存（不推荐，仅用于兼容）
+		logger.Info("使用传统模式（JSON 缓存），建议使用 SQLite 模式以获得更好的性能",
+			"提示", "设置 --collector.jobs.sqlite-path 启用 SQLite 模式",
+		)
 		// 解析逗号分隔的文件夹字符串
 		var folders []string
 		if cfg.Collector.FoldersStr != "" {
@@ -137,7 +190,7 @@ func Server(cfg *config.Config, logger *slog.Logger) error {
 	{
 		server := &http.Server{
 			Addr:         cfg.Server.Addr,
-			Handler:      handler(cfg, logger, client, jobCollector),
+			Handler:      handler(cfg, logger, client, jobCollector, buildCollector),
 			ReadTimeout:  5 * time.Second,
 			WriteTimeout: cfg.Server.Timeout,
 		}
@@ -191,7 +244,7 @@ func Server(cfg *config.Config, logger *slog.Logger) error {
 	return gr.Run()
 }
 
-func handler(cfg *config.Config, logger *slog.Logger, client *jenkins.Client, jobCollector *exporter.JobCollector) *chi.Mux {
+func handler(cfg *config.Config, logger *slog.Logger, client *jenkins.Client, jobCollector *exporter.JobCollector, buildCollector *jenkins.BuildCollector) *chi.Mux {
 	mux := chi.NewRouter()
 	mux.Use(middleware.Recoverer(logger))
 	mux.Use(middleware.RealIP)
@@ -202,7 +255,14 @@ func handler(cfg *config.Config, logger *slog.Logger, client *jenkins.Client, jo
 		mux.Mount("/debug", middleware.Profiler())
 	}
 
-	if cfg.Collector.Jobs && jobCollector != nil {
+	// 如果使用 SQLite 模式，注册 Build Collector
+	if buildCollector != nil {
+		logger.Info("已注册 Build Collector（SQLite 模式）")
+		registry.MustRegister(buildCollector)
+	}
+
+	// 如果使用传统模式，注册 JobCollector（仅当未使用 SQLite 时）
+	if cfg.Collector.Jobs && jobCollector != nil && cfg.Collector.SQLitePath == "" {
 		// 解析逗号分隔的文件夹字符串（用于日志）
 		var folders []string
 		if cfg.Collector.FoldersStr != "" {
@@ -216,12 +276,12 @@ func handler(cfg *config.Config, logger *slog.Logger, client *jenkins.Client, jo
 		}
 
 		if len(folders) > 0 {
-			logger.Info("已注册作业收集器",
+			logger.Info("已注册作业收集器（传统模式）",
 				"获取构建详情", cfg.Collector.FetchBuildDetails,
 				"指定文件夹", folders,
 			)
 		} else {
-			logger.Info("已注册作业收集器",
+			logger.Info("已注册作业收集器（传统模式）",
 				"获取构建详情", cfg.Collector.FetchBuildDetails,
 				"说明", "将获取所有文件夹下的作业",
 			)
