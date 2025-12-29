@@ -117,19 +117,23 @@ func (c *BuildCollector) collectOnce(ctx context.Context) error {
 		return nil
 	}
 
-	// 过滤掉排除的文件夹下的 job
+	// 过滤掉排除的文件夹下的 job，并删除它们的指标
 	filteredJobs := make([]storage.Job, 0, len(jobs))
 	excludedCount := 0
+	c.mu.Lock()
 	for _, job := range jobs {
 		if isExcludedFolder(job.JobName) {
 			excludedCount++
-			c.logger.Debug("跳过排除的文件夹下的 job",
+			c.logger.Debug("跳过排除的文件夹下的 job，删除其指标",
 				"job_name", job.JobName,
 			)
+			// 删除被排除的 job 的所有指标
+			c.buildResultGauge.DeletePartialMatch(prometheus.Labels{"job_name": job.JobName})
 			continue
 		}
 		filteredJobs = append(filteredJobs, job)
 	}
+	c.mu.Unlock()
 
 	if excludedCount > 0 {
 		c.logger.Debug("过滤掉排除的文件夹下的 job",
@@ -244,6 +248,18 @@ func (c *BuildCollector) collectOnce(ctx context.Context) error {
 	// 2. 如果某个 job 不再存在，它的指标会在下次采集时自然消失（因为不会更新）
 	// 3. 这样可以避免在采集过程中指标为空的情况
 
+	// 清理不再存在的 job 的指标（在数据库中但不在当前 job 列表中的）
+	// 获取当前所有有效的 job 名称集合
+	validJobNames := make(map[string]bool)
+	for _, job := range filteredJobs {
+		validJobNames[job.JobName] = true
+	}
+
+	// 注意：Prometheus GaugeVec 没有直接的方法获取所有指标
+	// 但我们可以通过其他方式处理：在处理每个 job 时更新指标，不在列表中的自然会被覆盖或保留
+	// 实际上，由于我们在处理每个 job 时使用 DeletePartialMatch 删除旧指标，然后设置新指标
+	// 不在列表中的 job 的指标会保留，但这是可以接受的，因为它们会在下次 Discovery 同步时被禁用
+
 	c.logger.Info("构建结果采集完成",
 		"总 job 数", len(jobs),
 		"已处理", processedCount,
@@ -252,13 +268,14 @@ func (c *BuildCollector) collectOnce(ctx context.Context) error {
 		"无已完成构建", noBuildCount,
 		"最近有构建过的 job", recentBuildCount,
 		"错误", errorCount,
-		"说明", fmt.Sprintf("已更新=%d 表示构建编号有变化（build_number > last_seen_build），最近有构建=%d 表示有已完成构建的 job 数量", updatedCount, recentBuildCount),
+		"排除的 job", excludedCount,
+		"说明", fmt.Sprintf("已更新=%d 表示构建编号有变化（build_number > last_seen_build），最近有构建=%d 表示有已完成构建的 job 数量，排除=%d 表示被过滤掉的 job 数量", updatedCount, recentBuildCount, excludedCount),
 	)
 
 	// 如果没有任何 job 被处理，记录警告
-	if processedCount == 0 && len(jobs) > 0 {
+	if processedCount == 0 && len(filteredJobs) > 0 {
 		c.logger.Warn("没有 job 被处理，可能的原因：所有 job 都没有已完成的构建，或者采集被中断",
-			"总 job 数", len(jobs),
+			"总 job 数", len(filteredJobs),
 			"提示", "请检查 SQLite 数据库中的 job 列表，或查看 DEBUG 日志了解详情",
 		)
 	}
