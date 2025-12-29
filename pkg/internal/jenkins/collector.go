@@ -100,13 +100,16 @@ func (c *BuildCollector) collectOnce(ctx context.Context) error {
 		return nil
 	}
 
-	c.logger.Debug("开始处理 job",
+	c.logger.Info("开始处理 job",
 		"job 数量", len(jobs),
 	)
 
 	processedCount := 0
 	updatedCount := 0
+	skippedCount := 0
 	errorCount := 0
+	noBuildCount := 0
+	recentBuildCount := 0 // 最近有构建的 job 数量
 
 	// 先清理所有旧指标
 	c.mu.Lock()
@@ -123,7 +126,8 @@ func (c *BuildCollector) collectOnce(ctx context.Context) error {
 			break
 		}
 
-		if err := c.processJob(ctx, job); err != nil {
+		result, err := c.processJob(ctx, job)
+		if err != nil {
 			// 如果是 context canceled，不记录为错误（优雅关闭）
 			if ctx.Err() == context.Canceled {
 				c.logger.Debug("采集被取消，停止处理",
@@ -138,14 +142,51 @@ func (c *BuildCollector) collectOnce(ctx context.Context) error {
 			errorCount++
 			continue
 		}
+
 		processedCount++
-		updatedCount++
+
+		// 根据处理结果统计
+		if result != nil {
+			if result.Updated {
+				updatedCount++
+				c.logger.Debug("已更新 job 构建信息",
+					"job_name", job.JobName,
+					"构建编号", result.BuildNumber,
+					"上次构建编号", job.LastSeenBuild,
+					"状态", result.Status,
+					"commit", result.CommitID,
+					"分支", result.Branch,
+				)
+			} else {
+				skippedCount++
+				c.logger.Debug("job 构建未变化（已处理过）",
+					"job_name", job.JobName,
+					"当前构建编号", result.BuildNumber,
+					"上次构建编号", job.LastSeenBuild,
+					"状态", result.Status,
+					"commit", result.CommitID,
+					"分支", result.Branch,
+				)
+			}
+			// 有构建编号就说明最近有构建过
+			if result.BuildNumber > 0 {
+				recentBuildCount++
+			}
+		} else {
+			noBuildCount++
+			c.logger.Debug("job 没有已完成的构建",
+				"job_name", job.JobName,
+			)
+		}
 
 		// 每处理 10 个 job 记录一次进度
 		if processedCount%10 == 0 {
-			c.logger.Debug("处理进度",
+			c.logger.Info("处理进度",
 				"已处理", processedCount,
 				"总数", len(jobs),
+				"已更新", updatedCount,
+				"跳过", skippedCount,
+				"无构建", noBuildCount,
 			)
 		}
 	}
@@ -154,22 +195,35 @@ func (c *BuildCollector) collectOnce(ctx context.Context) error {
 		"总 job 数", len(jobs),
 		"已处理", processedCount,
 		"已更新", updatedCount,
+		"跳过（未变化）", skippedCount,
+		"无构建", noBuildCount,
+		"最近有构建", recentBuildCount,
 		"错误", errorCount,
 	)
 
 	return nil
 }
 
+// ProcessResult contains the result of processing a job.
+type ProcessResult struct {
+	Updated     bool
+	BuildNumber int64
+	Status      string
+	CommitID    string
+	Branch      string
+}
+
 // processJob processes a single job and updates metrics if needed.
-func (c *BuildCollector) processJob(ctx context.Context, job storage.Job) error {
+// Returns ProcessResult if successful, nil if no build, error on failure.
+func (c *BuildCollector) processJob(ctx context.Context, job storage.Job) (*ProcessResult, error) {
 	// 初始化 SDK（如果尚未初始化）
 	if err := c.client.InitSDK(c.logger); err != nil {
-		return fmt.Errorf("failed to initialize SDK: %w", err)
+		return nil, fmt.Errorf("failed to initialize SDK: %w", err)
 	}
 
 	// 检查 context 是否已取消
 	if ctx.Err() != nil {
-		return ctx.Err()
+		return nil, ctx.Err()
 	}
 
 	// 使用 SDK 获取 job 的 lastCompletedBuild
@@ -177,16 +231,13 @@ func (c *BuildCollector) processJob(ctx context.Context, job storage.Job) error 
 	if err != nil {
 		// 如果是 context canceled，直接返回，不包装错误
 		if errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "context canceled") {
-			return context.Canceled
+			return nil, context.Canceled
 		}
-		return fmt.Errorf("failed to get last completed build: %w", err)
+		return nil, fmt.Errorf("failed to get last completed build: %w", err)
 	}
 
 	// 如果没有 completed build，跳过
 	if sdkBuild == nil {
-		c.logger.Debug("job 没有已完成的构建",
-			"job_name", job.JobName,
-		)
 		// 即使没有构建，也要更新指标为 not_built 状态
 		c.mu.Lock()
 		c.buildResultGauge.DeletePartialMatch(prometheus.Labels{"job_name": job.JobName})
@@ -197,22 +248,12 @@ func (c *BuildCollector) processJob(ctx context.Context, job storage.Job) error 
 			"not_built",
 		).Set(1.0)
 		c.mu.Unlock()
-		return nil
-	}
-
-	// 增量处理：只有 build number 大于 last_seen_build 时才处理
-	if buildNumber <= job.LastSeenBuild {
-		c.logger.Debug("构建已处理过，跳过",
-			"job_name", job.JobName,
-			"build_number", buildNumber,
-			"last_seen_build", job.LastSeenBuild,
-		)
-		return nil
+		return nil, nil // 返回 nil 表示没有构建
 	}
 
 	// 检查 context 是否已取消
 	if ctx.Err() != nil {
-		return ctx.Err()
+		return nil, ctx.Err()
 	}
 
 	// 获取构建详情（包括参数）
@@ -220,7 +261,7 @@ func (c *BuildCollector) processJob(ctx context.Context, job storage.Job) error 
 	if err != nil {
 		// 如果是 context canceled，直接返回
 		if errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "context canceled") {
-			return context.Canceled
+			return nil, context.Canceled
 		}
 		c.logger.Warn("获取构建详情失败，使用基本信息",
 			"job_name", job.JobName,
@@ -228,9 +269,9 @@ func (c *BuildCollector) processJob(ctx context.Context, job storage.Job) error 
 		)
 		// 即使获取详情失败，也使用基本信息
 		buildDetails = &BuildDetails{
-			Number:    buildNumber,
-			Result:    sdkBuild.GetResult(),
-			Building:  sdkBuild.IsRunning(ctx),
+			Number:     buildNumber,
+			Result:     sdkBuild.GetResult(),
+			Building:   sdkBuild.IsRunning(ctx),
 			Parameters: make(map[string]string),
 		}
 	}
@@ -246,7 +287,16 @@ func (c *BuildCollector) processJob(ctx context.Context, job storage.Job) error 
 		gitBranch = buildDetails.Parameters["GIT_BRANCH"]
 	}
 
-	// 更新指标
+	// 创建结果信息
+	result := &ProcessResult{
+		BuildNumber: buildNumber,
+		Status:      status,
+		CommitID:    checkCommitID,
+		Branch:      gitBranch,
+		Updated:     buildNumber > job.LastSeenBuild, // 只有构建编号变化时才标记为已更新
+	}
+
+	// 更新指标（无论是否变化都要更新，以反映当前状态）
 	c.mu.Lock()
 	// 先删除该 job 的所有旧指标
 	c.buildResultGauge.DeletePartialMatch(prometheus.Labels{"job_name": job.JobName})
@@ -259,19 +309,14 @@ func (c *BuildCollector) processJob(ctx context.Context, job storage.Job) error 
 	).Set(1.0)
 	c.mu.Unlock()
 
-	// 更新 SQLite 的 last_seen_build
-	if err := c.repo.UpdateLastSeen(job.JobName, buildNumber); err != nil {
-		return fmt.Errorf("failed to update last_seen_build: %w", err)
+	// 只有构建编号变化时才更新 SQLite
+	if result.Updated {
+		if err := c.repo.UpdateLastSeen(job.JobName, buildNumber); err != nil {
+			return nil, fmt.Errorf("failed to update last_seen_build: %w", err)
+		}
 	}
 
-	c.logger.Debug("已处理 job 构建",
-		"job_name", job.JobName,
-		"build_number", buildNumber,
-		"status", status,
-		"使用 SDK", true,
-	)
-
-	return nil
+	return result, nil
 }
 
 // parseBuildStatus converts build result to status string.
