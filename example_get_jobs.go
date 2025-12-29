@@ -152,9 +152,11 @@ func main() {
 		} else {
 			fmt.Printf("✅ 成功获取 job: %s\n", specificJobName)
 			printJobDetails(job, ctx)
+		}
+	}
 
-		// 7. 获取 job 的最后一次构建（使用已获取的job对象）
-		if len(allJobsInFolder) > 0 {
+	// 7. 获取 job 的最后一次构建（使用已获取的job对象）
+	if len(allJobsInFolder) > 0 {
 			fmt.Println("\n=== 方法4: 获取 job 的最后一次构建 ===")
 			testJob := allJobsInFolder[0]
 			fmt.Printf("使用 job: %s\n", testJob.GetName())
