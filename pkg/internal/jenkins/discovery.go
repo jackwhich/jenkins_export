@@ -10,6 +10,28 @@ import (
 	"github.com/promhippie/jenkins_exporter/pkg/internal/storage"
 )
 
+// convertJobPathForSDK converts job path from "folder/job" to "folder/job/job" format
+// that gojenkins SDK expects.
+// Example: "uat/pre-wallet-server" -> "uat/job/pre-wallet-server"
+// Example: "folder/subfolder/job" -> "folder/job/subfolder/job/job"
+func convertJobPathForSDK(fullName string) string {
+	// 如果路径包含 "/"，说明是文件夹下的 job
+	// gojenkins SDK 需要 "folder/job/job" 格式，而不是 "folder/job"
+	if strings.Contains(fullName, "/") {
+		parts := strings.Split(fullName, "/")
+		// 将每个部分之间插入 "job"
+		// 例如: ["uat", "pre-wallet-server"] -> "uat/job/pre-wallet-server"
+		// 例如: ["folder", "subfolder", "job"] -> "folder/job/subfolder/job/job"
+		result := parts[0]
+		for i := 1; i < len(parts); i++ {
+			result += "/job/" + parts[i]
+		}
+		return result
+	}
+	// 如果是顶层 job，直接返回
+	return fullName
+}
+
 // StartDiscovery starts the job discovery process that periodically syncs job list from Jenkins to SQLite.
 // It runs at the specified interval (recommended: 5-10 minutes).
 func StartDiscovery(ctx context.Context, client *Client, repo *storage.JobRepo, interval time.Duration, folders []string, logger *slog.Logger) error {
@@ -156,7 +178,16 @@ func syncJobsOnce(ctx context.Context, client *Client, repo *storage.JobRepo, fo
 			}
 		}
 		
-		jobNames = append(jobNames, fullName)
+		// 将路径转换为 SDK 格式（folder/job -> folder/job/job）
+		// 这样存储到数据库后，采集时可以直接使用，不需要再次转换
+		sdkPath := convertJobPathForSDK(fullName)
+		logger.Debug("转换 job 路径为 SDK 格式",
+			"原始路径", fullName,
+			"SDK 路径", sdkPath,
+			"说明", "存储到数据库的路径已经是 SDK 格式，采集时可直接使用",
+		)
+		
+		jobNames = append(jobNames, sdkPath)
 	}
 	
 	if folderCount > 0 {
