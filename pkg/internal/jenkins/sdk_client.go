@@ -450,23 +450,40 @@ func (c *SDKClient) GetAllJobs(ctx context.Context, folderNames []string) ([]*go
 	return allJobs, nil
 }
 
+// convertJobPathForSDK converts job path from "folder/job" to "folder/job/job" format
+// that gojenkins SDK expects.
+// Example: "uat/pre-wallet-server" -> "uat/job/pre-wallet-server"
+func convertJobPathForSDK(fullName string) string {
+	// 如果路径包含 "/"，说明是文件夹下的 job
+	// gojenkins SDK 需要 "folder/job/job" 格式，而不是 "folder/job"
+	if strings.Contains(fullName, "/") {
+		parts := strings.Split(fullName, "/")
+		// 将每个部分之间插入 "job"
+		// 例如: ["uat", "pre-wallet-server"] -> "uat/job/pre-wallet-server"
+		result := parts[0]
+		for i := 1; i < len(parts); i++ {
+			result += "/job/" + parts[i]
+		}
+		return result
+	}
+	// 如果是顶层 job，直接返回
+	return fullName
+}
+
 // GetJobByFullName gets a job by its full name (e.g., "folder/job").
+// It converts the path format from "folder/job" to "folder/job/job" for gojenkins SDK.
 func (c *SDKClient) GetJobByFullName(ctx context.Context, fullName string) (*gojenkins.Job, error) {
-	// gojenkins 的 GetJob 方法支持完整路径
-	// fullName 应该是完整路径，例如 "folder/job" 或 "folder/subfolder/job"
-	// 如果是顶层 job，fullName 就是 job 名称本身，例如 "job"
+	// 转换路径格式：从 "folder/job" 转换为 "folder/job/job"
+	// gojenkins SDK 需要这种格式才能正确获取 job
+	sdkPath := convertJobPathForSDK(fullName)
+	
 	c.logger.Debug("使用完整路径获取 job",
-		"full_name", fullName,
-		"说明", "如果 job 在文件夹下，路径格式为 folder/job；如果是顶层 job，就是 job 名称本身",
+		"原始路径", fullName,
+		"SDK 路径", sdkPath,
+		"说明", "gojenkins SDK 需要 folder/job/job 格式，而不是 folder/job 格式",
 	)
 	
-	// 记录实际使用的路径（用于调试）
-	c.logger.Debug("调用 gojenkins SDK GetJob",
-		"full_name", fullName,
-		"说明", "gojenkins SDK 会自动将 folder/job 转换为 /job/folder/job/job 格式的 URL",
-	)
-	
-	job, err := c.jenkins.GetJob(ctx, fullName)
+	job, err := c.jenkins.GetJob(ctx, sdkPath)
 	if err != nil {
 		// 检查错误信息，判断是否是 HTML 响应（可能是认证失败、404、权限问题等）
 		errMsg := err.Error()
@@ -474,22 +491,23 @@ func (c *SDKClient) GetJobByFullName(ctx context.Context, fullName string) (*goj
 		// 尝试从错误中提取更多信息
 		// gojenkins SDK 内部可能会返回包含 URL 的错误信息
 		c.logger.Debug("gojenkins SDK GetJob 调用失败",
-			"job_name", fullName,
+			"原始路径", fullName,
+			"SDK 路径", sdkPath,
 			"错误类型", fmt.Sprintf("%T", err),
 			"错误信息", errMsg,
-			"说明", "如果返回 HTML 而非 JSON，可能是：1) job 是文件夹 2) job 不存在 3) 权限不足 4) 路径格式不正确",
+			"说明", "如果返回 HTML 而非 JSON，可能是：1) job 是文件夹 2) job 不存在 3) 权限不足",
 		)
 		
 		if strings.Contains(errMsg, "invalid character '<'") || strings.Contains(errMsg, "looking for beginning of value") {
 			// 可能是文件夹而不是实际的 job，或者权限问题，或者路径不正确
 			c.logger.Debug("获取 job 失败，返回了 HTML 而非 JSON",
-				"job_name", fullName,
+				"原始路径", fullName,
+				"SDK 路径", sdkPath,
 				"错误", errMsg,
 				"可能原因", []string{
 					"job 是文件夹类型（应该在 Discovery 阶段被过滤）",
 					"job 不存在或路径不正确",
 					"权限不足，返回了错误页面",
-					"gojenkins SDK 路径转换有问题",
 				},
 				"建议", "检查 Discovery 日志，确认这个 job 是否被正确识别为构建 job",
 			)
