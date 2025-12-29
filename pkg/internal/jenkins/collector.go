@@ -100,8 +100,9 @@ func (c *BuildCollector) collectOnce(ctx context.Context) error {
 		return nil
 	}
 
-	c.logger.Info("开始处理 job",
+	c.logger.Info("开始采集构建结果",
 		"job 数量", len(jobs),
+		"说明", "将逐个处理每个 job，获取最后一次完成的构建信息",
 	)
 
 	processedCount := 0
@@ -194,11 +195,12 @@ func (c *BuildCollector) collectOnce(ctx context.Context) error {
 	c.logger.Info("构建结果采集完成",
 		"总 job 数", len(jobs),
 		"已处理", processedCount,
-		"已更新", updatedCount,
-		"跳过（未变化）", skippedCount,
-		"无构建", noBuildCount,
-		"最近有构建", recentBuildCount,
+		"构建信息有变化", updatedCount,
+		"构建信息未变化", skippedCount,
+		"无已完成构建", noBuildCount,
+		"最近有构建过的 job", recentBuildCount,
 		"错误", errorCount,
+		"说明", fmt.Sprintf("已更新=%d 表示构建编号有变化（build_number > last_seen_build），最近有构建=%d 表示有已完成构建的 job 数量", updatedCount, recentBuildCount),
 	)
 
 	return nil
