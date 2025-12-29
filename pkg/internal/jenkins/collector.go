@@ -75,10 +75,12 @@ func (c *BuildCollector) triggerCollectionIfNeeded() {
 	}
 
 	// 如果距离上次采集时间太短（小于 5 秒），不触发（避免频繁采集）
+	// 这样可以避免在短时间内多次请求 /metrics 时重复采集
 	timeSinceLastCollect := time.Since(c.lastCollectTime)
 	if timeSinceLastCollect < 5*time.Second {
-		c.logger.Debug("距离上次采集时间太短，跳过本次触发",
+		c.logger.Debug("距离上次采集时间太短，跳过本次触发（避免频繁采集）",
 			"距离上次", timeSinceLastCollect,
+			"说明", "如果 Prometheus 抓取间隔小于 5 秒，会跳过重复采集",
 		)
 		return
 	}
@@ -97,10 +99,11 @@ func (c *BuildCollector) triggerCollectionIfNeeded() {
 
 // Start starts the build collector that collects build results on demand.
 // It listens for collection triggers (from Prometheus scrapes) and processes jobs asynchronously in batches.
+// 完全按需采集：只有在请求 /metrics 时才会触发采集，不会自动定时采集。
 func (c *BuildCollector) Start(ctx context.Context, interval time.Duration) error {
-	c.logger.Info("启动 Build Collector（按需采集模式）",
-		"说明", "当 Prometheus 抓取 /metrics 时会触发采集，采集会在后台异步批量处理",
-		"最大采集间隔", interval,
+	c.logger.Info("启动 Build Collector（完全按需采集模式）",
+		"说明", "只有在请求 /metrics 时才会触发采集，不会自动定时采集",
+		"注意", "interval 参数已废弃，不再使用定时采集",
 	)
 
 	// 等待 Discovery 完成首次同步（避免数据库为空）
@@ -109,7 +112,7 @@ func (c *BuildCollector) Start(ctx context.Context, interval time.Duration) erro
 	maxWaitTime := 30 * time.Second
 	checkInterval := 2 * time.Second
 	waited := false
-	
+
 	for i := 0; i < int(maxWaitTime/checkInterval); i++ {
 		jobs, err := c.repo.ListEnabledJobs()
 		if err == nil && len(jobs) > 0 {
@@ -119,13 +122,13 @@ func (c *BuildCollector) Start(ctx context.Context, interval time.Duration) erro
 			waited = true
 			break
 		}
-		
+
 		if i == 0 {
 			c.logger.Debug("数据库为空，等待 Discovery 同步...",
 				"说明", "Discovery 正在从 Jenkins 获取 job 列表并同步到数据库",
 			)
 		}
-		
+
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -133,26 +136,16 @@ func (c *BuildCollector) Start(ctx context.Context, interval time.Duration) erro
 			// 继续等待
 		}
 	}
-	
+
 	if !waited {
 		c.logger.Warn("等待 Discovery 同步超时，将使用当前数据库状态",
 			"等待时间", maxWaitTime,
 			"提示", "如果数据库仍然为空，请检查 Discovery 日志或 Jenkins 连接",
 		)
 	}
-	
-	// 执行首次采集
-	if err := c.collectOnceAsync(ctx); err != nil {
-		c.logger.Warn("首次采集失败",
-			"错误", err,
-		)
-	}
 
-	// 启动后台采集协程（按需触发 + 最大间隔保护）
+	// 启动后台采集协程（完全按需触发，只在请求 /metrics 时触发）
 	go func() {
-		ticker := time.NewTicker(interval) // 最大采集间隔（防止长时间没有请求导致数据过期）
-		defer ticker.Stop()
-
 		for {
 			select {
 			case <-ctx.Done():
@@ -161,18 +154,10 @@ func (c *BuildCollector) Start(ctx context.Context, interval time.Duration) erro
 				)
 				return
 			case <-c.collectTrigger:
-				// 收到采集触发请求（来自 Prometheus 抓取）
-				c.logger.Debug("收到采集触发请求（来自 Prometheus 抓取）")
+				// 收到采集触发请求（来自 Prometheus 抓取 /metrics）
+				c.logger.Debug("收到采集触发请求（来自 Prometheus 抓取 /metrics）")
 				if err := c.collectOnceAsync(ctx); err != nil {
 					c.logger.Warn("构建结果采集失败",
-						"错误", err,
-					)
-				}
-			case <-ticker.C:
-				// 最大间隔保护：即使没有请求，也定期采集一次（防止数据过期）
-				c.logger.Debug("最大采集间隔到达，执行定期采集")
-				if err := c.collectOnceAsync(ctx); err != nil {
-					c.logger.Warn("定期采集失败",
 						"错误", err,
 					)
 				}
