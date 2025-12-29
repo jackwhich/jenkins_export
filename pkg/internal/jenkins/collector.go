@@ -107,25 +107,35 @@ func (c *BuildCollector) Start(ctx context.Context, interval time.Duration) erro
 	)
 
 	// 等待 Discovery 完成首次同步（避免数据库为空）
-	// 最多等待 30 秒，每 2 秒检查一次
-	c.logger.Info("等待 Discovery 完成首次同步...")
-	maxWaitTime := 30 * time.Second
-	checkInterval := 2 * time.Second
+	// 最多等待 5 分钟，每 5 秒检查一次并输出进度
+	// 当有很多 job 时，Discovery 可能需要较长时间来获取和同步
+	c.logger.Info("等待 Discovery 完成首次同步...",
+		"说明", "Discovery 正在从 Jenkins 获取 job 列表并同步到数据库，这可能需要一些时间",
+		"最大等待时间", "5 分钟",
+	)
+	maxWaitTime := 5 * time.Minute
+	checkInterval := 5 * time.Second
 	waited := false
+	startTime := time.Now()
 
 	for i := 0; i < int(maxWaitTime/checkInterval); i++ {
 		jobs, err := c.repo.ListEnabledJobs()
 		if err == nil && len(jobs) > 0 {
-			c.logger.Info("Discovery 已完成首次同步，开始采集",
+			elapsed := time.Since(startTime)
+			c.logger.Info("Discovery 已完成首次同步",
 				"job 数量", len(jobs),
+				"等待时间", elapsed,
 			)
 			waited = true
 			break
 		}
 
-		if i == 0 {
-			c.logger.Debug("数据库为空，等待 Discovery 同步...",
-				"说明", "Discovery 正在从 Jenkins 获取 job 列表并同步到数据库",
+		elapsed := time.Since(startTime)
+		// 每 30 秒输出一次等待进度
+		if i > 0 && i%6 == 0 {
+			c.logger.Info("等待 Discovery 同步中...",
+				"已等待", elapsed,
+				"说明", "Discovery 正在从 Jenkins 获取 job 列表，请稍候...",
 			)
 		}
 
@@ -138,9 +148,11 @@ func (c *BuildCollector) Start(ctx context.Context, interval time.Duration) erro
 	}
 
 	if !waited {
-		c.logger.Warn("等待 Discovery 同步超时，将使用当前数据库状态",
-			"等待时间", maxWaitTime,
-			"提示", "如果数据库仍然为空，请检查 Discovery 日志或 Jenkins 连接",
+		elapsed := time.Since(startTime)
+		c.logger.Warn("等待 Discovery 同步超时",
+			"等待时间", elapsed,
+			"最大等待时间", maxWaitTime,
+			"提示", "如果数据库仍然为空，请检查 Discovery 日志或 Jenkins 连接。Discovery 可能需要更长时间来获取大量 job。",
 		)
 	}
 
