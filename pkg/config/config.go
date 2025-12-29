@@ -43,7 +43,8 @@ type Collector struct {
 	// SQLite 相关配置
 	SQLitePath     string // SQLite 数据库路径，如果为空则不使用 SQLite
 	DiscoveryInterval time.Duration // Job Discovery 同步间隔，默认5分钟
-	CollectorInterval time.Duration // Build Collector 采集间隔，默认15秒
+	CollectorInterval time.Duration // Build Collector 采集间隔，默认15秒（已废弃，不再使用定时采集）
+	CollectorConcurrency int // Build Collector 并发数，默认10
 }
 
 // Config is a combination of all available configurations.

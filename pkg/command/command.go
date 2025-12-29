@@ -193,9 +193,16 @@ func RootFlags(cfg *config.Config) []cli.Flag {
 		&cli.DurationFlag{
 			Name:        "collector.jobs.collector-interval",
 			Value:       15 * time.Second,
-			Usage:       "Interval for build collector (collecting build results). Default: 15s",
+			Usage:       "Interval for build collector (collecting build results). Default: 15s (deprecated: no longer used for periodic collection)",
 			Sources:     cli.EnvVars("JENKINS_EXPORTER_COLLECTOR_JOBS_COLLECTOR_INTERVAL"),
 			Destination: &cfg.Collector.CollectorInterval,
+		},
+		&cli.IntFlag{
+			Name:        "collector.jobs.collector-concurrency",
+			Value:       10,
+			Usage:       "Concurrency for build collector (number of concurrent goroutines to process jobs). Default: 10",
+			Sources:     cli.EnvVars("JENKINS_EXPORTER_COLLECTOR_JOBS_COLLECTOR_CONCURRENCY"),
+			Destination: &cfg.Collector.CollectorConcurrency,
 		},
 	}
 }

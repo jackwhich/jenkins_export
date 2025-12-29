@@ -116,8 +116,8 @@ func Server(cfg *config.Config, logger *slog.Logger) error {
 			discoveryCancel()
 		})
 
-		// 创建并启动 Build Collector（高频采集）
-		buildCollector = jenkins.NewBuildCollector(client, jobRepo, logger)
+		// 创建并启动 Build Collector（按需采集）
+		buildCollector = jenkins.NewBuildCollector(client, jobRepo, logger, cfg.Collector.CollectorConcurrency)
 		collectorCtx, collectorCancel := context.WithCancel(context.Background())
 		gr.Add(func() error {
 			return buildCollector.Start(collectorCtx, cfg.Collector.CollectorInterval)

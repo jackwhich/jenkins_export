@@ -20,16 +20,22 @@ type BuildCollector struct {
 	logger           *slog.Logger
 	buildResultGauge *prometheus.GaugeVec
 	mu               sync.RWMutex
+	concurrency      int // 并发数
 
 	// 按需采集相关字段
 	lastCollectTime time.Time
 	collectMutex    sync.Mutex
 	collecting      bool          // 是否正在采集
 	collectTrigger  chan struct{} // 触发采集的通道
+	firstCollect    sync.Once     // 确保首次采集完成
+	firstCollectDone chan struct{} // 首次采集完成信号
 }
 
 // NewBuildCollector creates a new BuildCollector instance.
-func NewBuildCollector(client *Client, repo *storage.JobRepo, logger *slog.Logger) *BuildCollector {
+func NewBuildCollector(client *Client, repo *storage.JobRepo, logger *slog.Logger, concurrency int) *BuildCollector {
+	if concurrency <= 0 {
+		concurrency = 10 // 默认并发数
+	}
 	return &BuildCollector{
 		client: client,
 		repo:   repo,
@@ -41,7 +47,9 @@ func NewBuildCollector(client *Client, repo *storage.JobRepo, logger *slog.Logge
 			},
 			[]string{"job_name", "check_commitID", "gitBranch", "status"},
 		),
-		collectTrigger: make(chan struct{}, 1), // 带缓冲的通道，避免阻塞
+		concurrency:      concurrency,
+		collectTrigger:  make(chan struct{}, 1), // 带缓冲的通道，避免阻塞
+		firstCollectDone: make(chan struct{}),    // 首次采集完成信号
 	}
 }
 
@@ -52,12 +60,56 @@ func (c *BuildCollector) Describe(ch chan<- *prometheus.Desc) {
 
 // Collect implements prometheus.Collector.
 // 当 Prometheus 抓取 /metrics 时，这个方法会被调用。
-// 我们在这里触发按需采集（异步），然后返回当前的指标值。
+// 如果是首次请求，同步执行首次采集并等待完成后再返回指标；否则触发异步采集并返回当前指标。
 func (c *BuildCollector) Collect(ch chan<- prometheus.Metric) {
-	// 触发异步采集（如果距离上次采集超过一定时间，或者正在采集中则跳过）
+	// 如果是首次请求，同步执行首次采集并等待完成
+	c.firstCollect.Do(func() {
+		c.logger.Info("首次请求 /metrics，同步执行首次采集...")
+		// 同步执行首次采集，确保首次请求返回最新数据
+		c.collectMutex.Lock()
+		if !c.collecting {
+			c.collecting = true
+			c.collectMutex.Unlock()
+			
+			// 同步执行首次采集
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			err := c.collectOnce(ctx)
+			cancel()
+			
+			c.collectMutex.Lock()
+			c.collecting = false
+			c.lastCollectTime = time.Now()
+			c.collectMutex.Unlock()
+			
+			if err != nil {
+				c.logger.Warn("首次采集失败",
+					"错误", err,
+				)
+			} else {
+				c.logger.Info("首次采集完成，返回指标")
+			}
+			
+			// 发送完成信号
+			select {
+			case c.firstCollectDone <- struct{}{}:
+			default:
+			}
+		} else {
+			c.collectMutex.Unlock()
+			// 如果正在采集，等待完成（最多等待 2 分钟）
+			select {
+			case <-c.firstCollectDone:
+				c.logger.Info("首次采集完成，返回指标")
+			case <-time.After(2 * time.Minute):
+				c.logger.Warn("首次采集超时，返回当前指标（可能为空）")
+			}
+		}
+	})
+
+	// 非首次请求：触发异步采集（如果距离上次采集超过一定时间，或者正在采集中则跳过）
 	c.triggerCollectionIfNeeded()
 
-	// 返回当前的指标值（即使正在采集，也返回当前已有的指标）
+	// 返回当前的指标值
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	c.buildResultGauge.Collect(ch)
@@ -124,7 +176,7 @@ func (c *BuildCollector) Start(ctx context.Context, interval time.Duration) erro
 		if err == nil {
 			jobCount = len(jobs)
 		}
-		
+
 		if jobCount > 0 {
 			elapsed := time.Since(startTime)
 			c.logger.Info("Discovery 已完成首次同步",
@@ -207,12 +259,18 @@ func (c *BuildCollector) collectOnceAsync(ctx context.Context) error {
 	}
 	c.collecting = true
 	c.collectMutex.Unlock()
-
+	
 	defer func() {
 		c.collectMutex.Lock()
 		c.collecting = false
 		c.lastCollectTime = time.Now()
 		c.collectMutex.Unlock()
+		
+		// 如果是首次采集，发送完成信号
+		select {
+		case c.firstCollectDone <- struct{}{}:
+		default:
+		}
 	}()
 
 	return c.collectOnce(ctx)
@@ -307,12 +365,12 @@ func (c *BuildCollector) collectOnce(ctx context.Context) error {
 
 	c.logger.Info("开始异步批量处理 job",
 		"总 job 数", len(jobs),
+		"并发数", c.concurrency,
 		"说明", "job 列表已从数据库读取，现在异步批量获取构建信息",
 	)
 
 	// 异步批量处理 job（使用 goroutine 池）
-	const maxConcurrency = 10 // 最大并发数
-	semaphore := make(chan struct{}, maxConcurrency)
+	semaphore := make(chan struct{}, c.concurrency)
 	var wg sync.WaitGroup
 	resultChan := make(chan *jobProcessResult, len(jobs))
 
