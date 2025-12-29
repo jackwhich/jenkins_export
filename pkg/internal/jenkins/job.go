@@ -3,6 +3,7 @@ package jenkins
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 	"sync"
 )
@@ -51,11 +52,14 @@ func (c *JobClient) GetLastCompletedBuild(ctx context.Context, jobName string) (
 	// 构建 job API URL
 	// jobName 格式可能是 "folder/job" 或 "folder/subfolder/job"
 	// 需要转换为 Jenkins API 路径格式：/job/folder/job/folder/job/...
+	// 注意：Jenkins API 路径中的 job 名称需要进行 URL 编码
 	pathParts := strings.Split(jobName, "/")
 	apiPath := ""
 	for _, part := range pathParts {
 		if part != "" {
-			apiPath += "/job/" + part
+			// URL 编码每个部分，处理特殊字符
+			encodedPart := url.PathEscape(part)
+			apiPath += "/job/" + encodedPart
 		}
 	}
 
@@ -63,12 +67,12 @@ func (c *JobClient) GetLastCompletedBuild(ctx context.Context, jobName string) (
 	jobURL := fmt.Sprintf("%s%s/api/json", c.client.endpoint, apiPath)
 	req, err := c.client.NewRequest(ctx, "GET", jobURL, nil)
 	if err != nil {
-		return nil, 0, fmt.Errorf("failed to create request for job %s: %w", jobName, err)
+		return nil, 0, fmt.Errorf("failed to create request for job %s (URL: %s): %w", jobName, jobURL, err)
 	}
 
 	var job Job
 	if _, err := c.client.Do(req, &job); err != nil {
-		return nil, 0, fmt.Errorf("failed to get job %s: %w", jobName, err)
+		return nil, 0, fmt.Errorf("failed to get job %s (URL: %s): %w", jobName, jobURL, err)
 	}
 
 	// 如果没有 lastCompletedBuild，返回 nil
