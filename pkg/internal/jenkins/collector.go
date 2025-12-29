@@ -20,6 +20,12 @@ type BuildCollector struct {
 	logger           *slog.Logger
 	buildResultGauge *prometheus.GaugeVec
 	mu               sync.RWMutex
+	
+	// 按需采集相关字段
+	lastCollectTime  time.Time
+	collectMutex     sync.Mutex
+	collecting       bool // 是否正在采集
+	collectTrigger   chan struct{} // 触发采集的通道
 }
 
 // NewBuildCollector creates a new BuildCollector instance.
@@ -35,6 +41,7 @@ func NewBuildCollector(client *Client, repo *storage.JobRepo, logger *slog.Logge
 			},
 			[]string{"job_name", "check_commitID", "gitBranch", "status"},
 		),
+		collectTrigger: make(chan struct{}, 1), // 带缓冲的通道，避免阻塞
 	}
 }
 
@@ -44,45 +51,122 @@ func (c *BuildCollector) Describe(ch chan<- *prometheus.Desc) {
 }
 
 // Collect implements prometheus.Collector.
+// 当 Prometheus 抓取 /metrics 时，这个方法会被调用。
+// 我们在这里触发按需采集（异步），然后返回当前的指标值。
 func (c *BuildCollector) Collect(ch chan<- prometheus.Metric) {
+	// 触发异步采集（如果距离上次采集超过一定时间，或者正在采集中则跳过）
+	c.triggerCollectionIfNeeded()
+	
+	// 返回当前的指标值（即使正在采集，也返回当前已有的指标）
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	c.buildResultGauge.Collect(ch)
 }
 
-// Start starts the build collector that periodically collects build results.
-// It runs at the specified interval (recommended: 15 seconds).
+// triggerCollectionIfNeeded 触发按需采集（如果距离上次采集超过阈值）
+func (c *BuildCollector) triggerCollectionIfNeeded() {
+	c.collectMutex.Lock()
+	defer c.collectMutex.Unlock()
+	
+	// 如果正在采集，不重复触发
+	if c.collecting {
+		c.logger.Debug("采集正在进行中，跳过本次触发")
+		return
+	}
+	
+	// 如果距离上次采集时间太短（小于 5 秒），不触发（避免频繁采集）
+	timeSinceLastCollect := time.Since(c.lastCollectTime)
+	if timeSinceLastCollect < 5*time.Second {
+		c.logger.Debug("距离上次采集时间太短，跳过本次触发",
+			"距离上次", timeSinceLastCollect,
+		)
+		return
+	}
+	
+	// 异步触发采集
+	select {
+	case c.collectTrigger <- struct{}{}:
+		c.logger.Debug("触发按需采集",
+			"距离上次采集", timeSinceLastCollect,
+		)
+	default:
+		// 通道已满，说明已经有待处理的触发请求
+		c.logger.Debug("采集触发通道已满，跳过本次触发")
+	}
+}
+
+// Start starts the build collector that collects build results on demand.
+// It listens for collection triggers (from Prometheus scrapes) and processes jobs asynchronously in batches.
 func (c *BuildCollector) Start(ctx context.Context, interval time.Duration) error {
-	c.logger.Info("启动 Build Collector",
-		"采集间隔", interval,
+	c.logger.Info("启动 Build Collector（按需采集模式）",
+		"说明", "当 Prometheus 抓取 /metrics 时会触发采集，采集会在后台异步批量处理",
+		"最大采集间隔", interval,
 	)
 
-	// 立即执行一次采集
-	if err := c.collectOnce(ctx); err != nil {
-		c.logger.Warn("首次采集失败，将在下一个周期重试",
+	// 立即执行一次采集（初始化）
+	if err := c.collectOnceAsync(ctx); err != nil {
+		c.logger.Warn("首次采集失败",
 			"错误", err,
 		)
 	}
 
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	// 启动后台采集协程（按需触发 + 最大间隔保护）
+	go func() {
+		ticker := time.NewTicker(interval) // 最大采集间隔（防止长时间没有请求导致数据过期）
+		defer ticker.Stop()
 
-	for {
-		select {
-		case <-ctx.Done():
-			c.logger.Info("Build Collector 已停止",
-				"原因", ctx.Err(),
-			)
-			return ctx.Err()
-		case <-ticker.C:
-			if err := c.collectOnce(ctx); err != nil {
-				c.logger.Warn("构建结果采集失败，将在下一个周期重试",
-					"错误", err,
+		for {
+			select {
+			case <-ctx.Done():
+				c.logger.Info("Build Collector 已停止",
+					"原因", ctx.Err(),
 				)
-				// 继续运行，不中断服务
+				return
+			case <-c.collectTrigger:
+				// 收到采集触发请求（来自 Prometheus 抓取）
+				c.logger.Debug("收到采集触发请求（来自 Prometheus 抓取）")
+				if err := c.collectOnceAsync(ctx); err != nil {
+					c.logger.Warn("构建结果采集失败",
+						"错误", err,
+					)
+				}
+			case <-ticker.C:
+				// 最大间隔保护：即使没有请求，也定期采集一次（防止数据过期）
+				c.logger.Debug("最大采集间隔到达，执行定期采集")
+				if err := c.collectOnceAsync(ctx); err != nil {
+					c.logger.Warn("定期采集失败",
+						"错误", err,
+					)
+				}
 			}
 		}
+	}()
+
+	// 主协程等待 context 取消
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// collectOnceAsync performs a single collection cycle asynchronously.
+// It processes jobs in batches concurrently.
+func (c *BuildCollector) collectOnceAsync(ctx context.Context) error {
+	c.collectMutex.Lock()
+	if c.collecting {
+		c.collectMutex.Unlock()
+		c.logger.Debug("采集正在进行中，跳过本次请求")
+		return nil
 	}
+	c.collecting = true
+	c.collectMutex.Unlock()
+	
+	defer func() {
+		c.collectMutex.Lock()
+		c.collecting = false
+		c.lastCollectTime = time.Now()
+		c.collectMutex.Unlock()
+	}()
+
+	return c.collectOnce(ctx)
 }
 
 // isExcludedFolder checks if a job belongs to an excluded folder.
@@ -165,41 +249,60 @@ func (c *BuildCollector) collectOnce(ctx context.Context) error {
 	noBuildCount := 0
 	recentBuildCount := 0 // 最近有构建的 job 数量
 
-	// 先清理所有旧指标（但保留当前有效的指标，避免在采集过程中指标消失）
-	// 注意：我们不在开始时清空，而是在处理每个 job 时更新对应的指标
-	// 这样可以避免在采集过程中指标为空的情况
-	c.mu.Lock()
-	// 不在这里 Reset，而是在处理每个 job 时使用 DeletePartialMatch 删除旧指标
-	c.mu.Unlock()
+	c.logger.Info("开始异步批量处理 job",
+		"总 job 数", len(jobs),
+		"说明", "job 列表已从数据库读取，现在异步批量获取构建信息",
+	)
 
-	// 处理每个 job
+	// 异步批量处理 job（使用 goroutine 池）
+	const maxConcurrency = 10 // 最大并发数
+	semaphore := make(chan struct{}, maxConcurrency)
+	var wg sync.WaitGroup
+	resultChan := make(chan *jobProcessResult, len(jobs))
+	
+	// 启动 goroutine 处理每个 job
 	for _, job := range jobs {
-		// 检查 context 是否已取消（优雅关闭）
-		if ctx.Err() != nil {
-			c.logger.Debug("采集被中断",
-				"原因", ctx.Err(),
-			)
-			break
-		}
+		wg.Add(1)
+		go func(j storage.Job) {
+			defer wg.Done()
+			
+			// 获取信号量（控制并发数）
+			semaphore <- struct{}{}
+			defer func() { <-semaphore }()
+			
+			// 检查 context 是否已取消
+			if ctx.Err() != nil {
+				return
+			}
 
-		c.logger.Debug("开始处理 job",
-			"job_name", job.JobName,
-			"序号", processedCount+1,
-			"总数", len(jobs),
-		)
+			result, err := c.processJob(ctx, j)
+			resultChan <- &jobProcessResult{
+				job:    j,
+				result: result,
+				err:    err,
+			}
+		}(job)
+	}
 
-		result, err := c.processJob(ctx, job)
-		if err != nil {
+	// 等待所有 goroutine 完成
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
+
+	// 收集结果
+	for res := range resultChan {
+		if res.err != nil {
 			// 如果是 context canceled，不记录为错误（优雅关闭）
 			if ctx.Err() == context.Canceled {
 				c.logger.Debug("采集被取消，停止处理",
-					"job_name", job.JobName,
+					"job_name", res.job.JobName,
 				)
 				break
 			}
 			c.logger.Warn("处理 job 失败",
-				"job_name", job.JobName,
-				"错误", err,
+				"job_name", res.job.JobName,
+				"错误", res.err,
 			)
 			errorCount++
 			continue
@@ -207,43 +310,37 @@ func (c *BuildCollector) collectOnce(ctx context.Context) error {
 
 		processedCount++
 
-		c.logger.Debug("job 处理完成",
-			"job_name", job.JobName,
-			"有结果", result != nil,
-			"已处理总数", processedCount,
-		)
-
 		// 根据处理结果统计
-		if result != nil {
-			if result.Updated {
+		if res.result != nil {
+			if res.result.Updated {
 				updatedCount++
 				c.logger.Debug("已更新 job 构建信息",
-					"job_name", job.JobName,
-					"构建编号", result.BuildNumber,
-					"上次构建编号", job.LastSeenBuild,
-					"状态", result.Status,
-					"commit", result.CommitID,
-					"分支", result.Branch,
+					"job_name", res.job.JobName,
+					"构建编号", res.result.BuildNumber,
+					"上次构建编号", res.job.LastSeenBuild,
+					"状态", res.result.Status,
+					"commit", res.result.CommitID,
+					"分支", res.result.Branch,
 				)
 			} else {
 				skippedCount++
 				c.logger.Debug("job 构建未变化（已处理过）",
-					"job_name", job.JobName,
-					"当前构建编号", result.BuildNumber,
-					"上次构建编号", job.LastSeenBuild,
-					"状态", result.Status,
-					"commit", result.CommitID,
-					"分支", result.Branch,
+					"job_name", res.job.JobName,
+					"当前构建编号", res.result.BuildNumber,
+					"上次构建编号", res.job.LastSeenBuild,
+					"状态", res.result.Status,
+					"commit", res.result.CommitID,
+					"分支", res.result.Branch,
 				)
 			}
 			// 有构建编号就说明最近有构建过
-			if result.BuildNumber > 0 {
+			if res.result.BuildNumber > 0 {
 				recentBuildCount++
 			}
 		} else {
 			noBuildCount++
 			c.logger.Debug("job 没有已完成的构建",
-				"job_name", job.JobName,
+				"job_name", res.job.JobName,
 			)
 		}
 
@@ -306,6 +403,13 @@ type ProcessResult struct {
 	Status      string
 	CommitID    string
 	Branch      string
+}
+
+// jobProcessResult contains the result of processing a job in async mode.
+type jobProcessResult struct {
+	job    storage.Job
+	result *ProcessResult
+	err    error
 }
 
 // processJob processes a single job and updates metrics if needed.
