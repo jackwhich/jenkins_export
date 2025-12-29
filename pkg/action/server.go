@@ -2,6 +2,7 @@ package action
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -200,7 +201,7 @@ func Server(cfg *config.Config, logger *slog.Logger) error {
 				"监听地址", cfg.Server.Addr,
 			)
 
-			return web.ListenAndServe(
+			err := web.ListenAndServe(
 				server,
 				&web.FlagConfig{
 					WebListenAddresses: sliceP([]string{cfg.Server.Addr}),
@@ -209,6 +210,18 @@ func Server(cfg *config.Config, logger *slog.Logger) error {
 				},
 				logger,
 			)
+			
+			// 检查是否是端口占用错误，提供更友好的错误信息
+			if err != nil && strings.Contains(err.Error(), "address already in use") {
+				logger.Error("指标服务器启动失败：端口已被占用",
+					"监听地址", cfg.Server.Addr,
+					"错误", err,
+					"提示", "请检查是否有其他进程正在使用该端口，或使用 --web.address 指定其他端口",
+				)
+				return fmt.Errorf("端口 %s 已被占用，请检查是否有其他进程正在使用该端口: %w", cfg.Server.Addr, err)
+			}
+			
+			return err
 		}, func(reason error) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()

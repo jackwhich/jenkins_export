@@ -157,9 +157,11 @@ func (c *BuildCollector) collectOnce(ctx context.Context) error {
 	noBuildCount := 0
 	recentBuildCount := 0 // 最近有构建的 job 数量
 
-	// 先清理所有旧指标
+	// 先清理所有旧指标（但保留当前有效的指标，避免在采集过程中指标消失）
+	// 注意：我们不在开始时清空，而是在处理每个 job 时更新对应的指标
+	// 这样可以避免在采集过程中指标为空的情况
 	c.mu.Lock()
-	c.buildResultGauge.Reset()
+	// 不在这里 Reset，而是在处理每个 job 时使用 DeletePartialMatch 删除旧指标
 	c.mu.Unlock()
 
 	// 处理每个 job
@@ -237,6 +239,11 @@ func (c *BuildCollector) collectOnce(ctx context.Context) error {
 		}
 	}
 
+	// 注意：我们不在采集结束时清理指标，因为：
+	// 1. 每个 job 在处理时都会更新对应的指标（使用 DeletePartialMatch 删除旧指标）
+	// 2. 如果某个 job 不再存在，它的指标会在下次采集时自然消失（因为不会更新）
+	// 3. 这样可以避免在采集过程中指标为空的情况
+
 	c.logger.Info("构建结果采集完成",
 		"总 job 数", len(jobs),
 		"已处理", processedCount,
@@ -247,6 +254,14 @@ func (c *BuildCollector) collectOnce(ctx context.Context) error {
 		"错误", errorCount,
 		"说明", fmt.Sprintf("已更新=%d 表示构建编号有变化（build_number > last_seen_build），最近有构建=%d 表示有已完成构建的 job 数量", updatedCount, recentBuildCount),
 	)
+
+	// 如果没有任何 job 被处理，记录警告
+	if processedCount == 0 && len(jobs) > 0 {
+		c.logger.Warn("没有 job 被处理，可能的原因：所有 job 都没有已完成的构建，或者采集被中断",
+			"总 job 数", len(jobs),
+			"提示", "请检查 SQLite 数据库中的 job 列表，或查看 DEBUG 日志了解详情",
+		)
+	}
 
 	return nil
 }
