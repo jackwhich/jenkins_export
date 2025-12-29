@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"time"
 
@@ -12,9 +13,27 @@ import (
 
 func main() {
 	// 1. 创建 Jenkins 客户端
-	jenkinsURL := "http://jenkins.example.com"
-	username := "your_username"
-	password := "your_password"
+	// ⚠️ 请修改为你的 Jenkins 连接信息
+	jenkinsURL := "http://jenkins.example.com"  // 改为你的 Jenkins URL
+	username := "your_username"                  // 改为你的用户名
+	password := "your_password"                  // 改为你的密码
+	
+	// 或者从环境变量读取
+	if jenkinsURL == "http://jenkins.example.com" {
+		if url := os.Getenv("JENKINS_URL"); url != "" {
+			jenkinsURL = url
+		}
+	}
+	if username == "your_username" {
+		if user := os.Getenv("JENKINS_USERNAME"); user != "" {
+			username = user
+		}
+	}
+	if password == "your_password" {
+		if pass := os.Getenv("JENKINS_PASSWORD"); pass != "" {
+			password = pass
+		}
+	}
 
 	jenkins := gojenkins.CreateJenkins(nil, jenkinsURL, username, password)
 
