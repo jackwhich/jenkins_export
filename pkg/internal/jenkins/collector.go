@@ -343,6 +343,7 @@ func (c *BuildCollector) processJob(ctx context.Context, job storage.Job) (*Proc
 			c.logger.Debug("跳过 job（可能是文件夹或权限问题）",
 				"job_name", job.JobName,
 				"错误", errMsg,
+				"建议", "如果这个 job 是文件夹，应该在 Discovery 阶段被过滤掉。请检查 Discovery 日志，确认这个 job 是否被正确识别为文件夹。",
 			)
 			// 返回 nil, nil 表示跳过，不更新指标
 			return nil, nil

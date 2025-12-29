@@ -185,12 +185,31 @@ func (c *SDKClient) recursiveGetJobsWithPathMap(ctx context.Context, job *gojenk
 	}
 
 	// 检查是否是文件夹类型
+	// 方法1: 检查 Raw.Class 字段
 	isFolder := false
 	if job.Raw != nil {
 		jobClass := job.Raw.Class
-		if jobClass != "" && strings.Contains(jobClass, "Folder") {
-			isFolder = true
+		if jobClass != "" {
+			// 检查是否包含 Folder 相关的类名
+			if strings.Contains(jobClass, "Folder") || 
+			   strings.Contains(jobClass, "folder") ||
+			   strings.Contains(jobClass, "com.cloudbees.hudson.plugins.folder") {
+				isFolder = true
+				logger.Debug("检测到文件夹类型（通过 Class）",
+					"job_name", fullPath,
+					"class", jobClass,
+				)
+			}
 		}
+	}
+	
+	// 方法2: 如果 Raw 为空或 Class 未设置，尝试通过 GetInnerJobs 来判断
+	// 注意：这个方法可能会产生额外的 API 调用，所以只在必要时使用
+	if !isFolder && job.Raw == nil {
+		logger.Debug("job.Raw 为空，无法通过 Class 判断是否为文件夹",
+			"job_name", fullPath,
+			"说明", "将尝试通过其他方式判断",
+		)
 	}
 
 	if isFolder {
@@ -261,10 +280,60 @@ func (c *SDKClient) recursiveGetJobsWithPathMap(ctx context.Context, job *gojenk
 			}
 		}
 	} else {
-		// 如果不是文件夹，就是实际的构建 job，直接添加
-		// 注意：job 对象本身可能只包含相对名称，但我们使用 fullPath 作为完整路径
-		allJobs = append(allJobs, job)
-		jobPathMap[job] = fullPath
+		// 如果不是文件夹，检查是否真的是构建 job
+		// 再次验证：有些 job 的 Raw.Class 可能没有正确设置，需要额外检查
+		isActuallyFolder := false
+		if job.Raw != nil {
+			jobClass := job.Raw.Class
+			if jobClass != "" {
+				// 检查是否包含 Folder 相关的类名（更严格的检查）
+				if strings.Contains(jobClass, "Folder") || 
+				   strings.Contains(jobClass, "folder") ||
+				   strings.Contains(jobClass, "com.cloudbees.hudson.plugins.folder") {
+					isActuallyFolder = true
+					logger.Debug("检测到文件夹类型（在非文件夹分支），跳过",
+						"job_name", fullPath,
+						"class", jobClass,
+					)
+				}
+			}
+		}
+		
+		// 如果 Raw 为空或 Class 未设置，尝试通过 GetInnerJobs 来判断
+		// 注意：这个方法会产生额外的 API 调用，但可以更准确地识别文件夹
+		if !isActuallyFolder && (job.Raw == nil || job.Raw.Class == "") {
+			// 尝试获取子项，如果能成功获取，说明是文件夹
+			subJobs, err := job.GetInnerJobs(ctx)
+			if err == nil && len(subJobs) > 0 {
+				// 能获取到子项，说明是文件夹
+				isActuallyFolder = true
+				logger.Debug("通过 GetInnerJobs 检测到文件夹类型，跳过",
+					"job_name", fullPath,
+					"子项数量", len(subJobs),
+				)
+			} else if err == nil && len(subJobs) == 0 {
+				// 能调用 GetInnerJobs 但返回空，可能是空文件夹
+				// 但空文件夹也可能被当作文件夹处理
+				logger.Debug("检测到空文件夹，跳过",
+					"job_name", fullPath,
+				)
+				isActuallyFolder = true
+			}
+		}
+		
+		// 如果不是文件夹，就是实际的构建 job，添加到结果中
+		if !isActuallyFolder {
+			allJobs = append(allJobs, job)
+			jobPathMap[job] = fullPath
+			logger.Debug("添加构建 job",
+				"job_name", fullPath,
+			)
+		} else {
+			// 如果是文件夹但没有被正确识别，记录警告但不添加
+			logger.Debug("跳过文件夹类型的 job（在非文件夹分支中被识别）",
+				"job_name", fullPath,
+			)
+		}
 	}
 
 	return allJobs, jobPathMap, nil
