@@ -14,6 +14,7 @@ coverage.out
 # 编译后的二进制文件
 jenkins_exporter
 jenkins_exporter_test
+# jenkins_exporter_linux 需要推送到 Git，所以不忽略
 *.exe
 
 # Python 示例脚本（不提交到 Git）
