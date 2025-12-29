@@ -13,4 +13,11 @@ coverage.out
 
 # 编译后的二进制文件
 jenkins_exporter
+jenkins_exporter_test
 *.exe
+
+# Python 示例脚本（不提交到 Git）
+python_examples/
+
+# 编译输出目录
+dist/

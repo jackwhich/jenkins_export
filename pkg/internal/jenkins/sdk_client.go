@@ -41,6 +41,13 @@ func NewSDKClient(endpoint, username, password string, timeout time.Duration, lo
 	}, nil
 }
 
+// excludedFolders 是需要排除的文件夹列表（不采集这些文件夹下的 job）
+var excludedFolders = map[string]bool{
+	"prod-ebpay-new":  true,
+	"pre-ebpay-new":   true,
+	"prod-gray-ebpay":  true,
+}
+
 // GetAllJobsRecursive recursively gets all jobs from specified folders, filtering out folder-type jobs.
 func (c *SDKClient) GetAllJobsRecursive(ctx context.Context, folderNames []string, logger *slog.Logger) ([]*gojenkins.Job, error) {
 	allJobs := make([]*gojenkins.Job, 0)
@@ -48,17 +55,48 @@ func (c *SDKClient) GetAllJobsRecursive(ctx context.Context, folderNames []strin
 	// 如果没有指定文件夹，获取根目录下的所有内容
 	if len(folderNames) == 0 {
 		// 获取根目录下的所有 job（包括文件夹）
+		// 注意：gojenkins.GetAllJobs() 可能只返回顶层 job，不递归
+		// 所以我们需要手动递归处理每个 job
 		rootJobs, err := c.jenkins.GetAllJobs(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get root jobs: %w", err)
 		}
 
+		logger.Debug("获取到根目录下的顶层 job",
+			"顶层 job 数量", len(rootJobs),
+		)
+
 		// 递归处理每个 job（可能是文件夹或实际 job）
-		for _, job := range rootJobs {
+		for i, job := range rootJobs {
+			// 检查 context 是否已取消
+			if ctx.Err() != nil {
+				return allJobs, ctx.Err()
+			}
+
+			jobName := job.GetName()
+			
+			// 检查是否是排除的文件夹
+			if excludedFolders[jobName] {
+				logger.Debug("跳过排除的文件夹",
+					"folder_name", jobName,
+				)
+				continue
+			}
+
+			logger.Debug("处理顶层 job",
+				"序号", i+1,
+				"总数", len(rootJobs),
+				"job_name", jobName,
+			)
+
 			jobs, err := c.recursiveGetJobs(ctx, job, logger)
 			if err != nil {
+				// 如果是 context canceled，直接返回
+				if errors.Is(err, context.Canceled) || ctx.Err() == context.Canceled {
+					return allJobs, err
+				}
 				logger.Warn("递归获取 job 失败",
-					"job_name", job.GetName(),
+					"job_name", jobName,
 					"error", err,
 				)
 				continue
@@ -103,6 +141,22 @@ func (c *SDKClient) GetAllJobsRecursive(ctx context.Context, folderNames []strin
 func (c *SDKClient) recursiveGetJobs(ctx context.Context, job *gojenkins.Job, logger *slog.Logger) ([]*gojenkins.Job, error) {
 	allJobs := make([]*gojenkins.Job, 0)
 
+	jobName := job.GetName()
+	
+	// 检查是否是排除的文件夹（检查完整路径中的任何部分）
+	// 例如：如果 jobName 是 "prod-gray-ebpay/some-job"，需要检查路径的第一部分
+	parts := strings.Split(jobName, "/")
+	if len(parts) > 0 {
+		topLevelFolder := parts[0]
+		if excludedFolders[topLevelFolder] {
+			logger.Debug("跳过排除的文件夹路径",
+				"job_name", jobName,
+				"顶层文件夹", topLevelFolder,
+			)
+			return allJobs, nil // 返回空列表，不递归处理
+		}
+	}
+
 	// 检查是否是文件夹类型
 	isFolder := false
 	if job.Raw != nil {
@@ -115,30 +169,44 @@ func (c *SDKClient) recursiveGetJobs(ctx context.Context, job *gojenkins.Job, lo
 	if isFolder {
 		// 如果是文件夹，获取文件夹下的所有内容
 		// gojenkins 使用 GetInnerJobs(ctx) 获取文件夹下的子项
-		if job.Raw != nil && job.Raw.Jobs != nil {
-			subJobs, err := job.GetInnerJobs(ctx)
-			if err != nil {
-				// 如果获取失败，可能不是文件夹或没有权限
-				logger.Debug("获取文件夹下的子项失败",
-					"folder_name", job.GetName(),
-					"error", err,
-				)
-				return allJobs, nil // 返回空列表，不中断
+		// 注意：即使 job.Raw.Jobs 是 nil，也应该尝试调用 GetInnerJobs
+		// 因为 SDK 可能会在调用时自动获取子项
+		subJobs, err := job.GetInnerJobs(ctx)
+		if err != nil {
+			// 如果获取失败，可能不是文件夹或没有权限
+			logger.Debug("获取文件夹下的子项失败",
+				"folder_name", job.GetName(),
+				"error", err,
+			)
+			return allJobs, nil // 返回空列表，不中断
+		}
+
+		logger.Debug("文件夹下的子项",
+			"folder_name", job.GetName(),
+			"子项数量", len(subJobs),
+		)
+
+		// 递归处理每个子项
+		for _, subJob := range subJobs {
+			// 检查 context 是否已取消
+			if ctx.Err() != nil {
+				return allJobs, ctx.Err()
 			}
 
-			// 递归处理每个子项
-			for _, subJob := range subJobs {
-				jobs, err := c.recursiveGetJobs(ctx, subJob, logger)
-				if err != nil {
-					logger.Debug("递归获取子 job 失败",
-						"parent", job.GetName(),
-						"child", subJob.GetName(),
-						"error", err,
-					)
-					continue
+			jobs, err := c.recursiveGetJobs(ctx, subJob, logger)
+			if err != nil {
+				// 如果是 context canceled，直接返回
+				if errors.Is(err, context.Canceled) || ctx.Err() == context.Canceled {
+					return allJobs, err
 				}
-				allJobs = append(allJobs, jobs...)
+				logger.Debug("递归获取子 job 失败",
+					"parent", job.GetName(),
+					"child", subJob.GetName(),
+					"error", err,
+				)
+				continue
 			}
+			allJobs = append(allJobs, jobs...)
 		}
 	} else {
 		// 如果不是文件夹，就是实际的构建 job，直接添加
