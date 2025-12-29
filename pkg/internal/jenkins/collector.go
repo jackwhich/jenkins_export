@@ -85,6 +85,23 @@ func (c *BuildCollector) Start(ctx context.Context, interval time.Duration) erro
 	}
 }
 
+// isExcludedFolder checks if a job belongs to an excluded folder.
+func isExcludedFolder(jobName string) bool {
+	excludedFolders := map[string]bool{
+		"prod-ebpay-new":  true,
+		"pre-ebpay-new":   true,
+		"prod-gray-ebpay":  true,
+	}
+	
+	// 检查 job 路径的第一部分（顶层文件夹）是否在排除列表中
+	parts := strings.Split(jobName, "/")
+	if len(parts) > 0 {
+		topLevelFolder := parts[0]
+		return excludedFolders[topLevelFolder]
+	}
+	return false
+}
+
 // collectOnce performs a single collection cycle.
 func (c *BuildCollector) collectOnce(ctx context.Context) error {
 	c.logger.Debug("开始采集构建结果")
@@ -97,6 +114,34 @@ func (c *BuildCollector) collectOnce(ctx context.Context) error {
 
 	if len(jobs) == 0 {
 		c.logger.Debug("没有启用的 job 需要采集")
+		return nil
+	}
+
+	// 过滤掉排除的文件夹下的 job
+	filteredJobs := make([]storage.Job, 0, len(jobs))
+	excludedCount := 0
+	for _, job := range jobs {
+		if isExcludedFolder(job.JobName) {
+			excludedCount++
+			c.logger.Debug("跳过排除的文件夹下的 job",
+				"job_name", job.JobName,
+			)
+			continue
+		}
+		filteredJobs = append(filteredJobs, job)
+	}
+
+	if excludedCount > 0 {
+		c.logger.Debug("过滤掉排除的文件夹下的 job",
+			"排除数量", excludedCount,
+			"剩余数量", len(filteredJobs),
+		)
+	}
+
+	jobs = filteredJobs
+
+	if len(jobs) == 0 {
+		c.logger.Debug("过滤后没有启用的 job 需要采集")
 		return nil
 	}
 

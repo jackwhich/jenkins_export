@@ -65,13 +65,43 @@ func syncJobsOnce(ctx context.Context, client *Client, repo *storage.JobRepo, fo
 		return fmt.Errorf("failed to get jobs from Jenkins SDK: %w", err)
 	}
 
-	// 提取 job 名称（使用 GetName() 获取完整路径）
+	// 提取 job 名称（使用 GetName() 获取完整路径），并过滤掉排除的文件夹
+	excludedFolders := map[string]bool{
+		"prod-ebpay-new":  true,
+		"pre-ebpay-new":   true,
+		"prod-gray-ebpay":  true,
+	}
+	
 	jobNames := make([]string, 0, len(sdkJobs))
+	excludedCount := 0
 	for _, job := range sdkJobs {
 		fullName := job.GetName()
-		if fullName != "" {
-			jobNames = append(jobNames, fullName)
+		if fullName == "" {
+			continue
 		}
+		
+		// 检查是否是排除的文件夹下的 job
+		parts := strings.Split(fullName, "/")
+		if len(parts) > 0 {
+			topLevelFolder := parts[0]
+			if excludedFolders[topLevelFolder] {
+				excludedCount++
+				logger.Debug("过滤掉排除的文件夹下的 job",
+					"job_name", fullName,
+					"顶层文件夹", topLevelFolder,
+				)
+				continue
+			}
+		}
+		
+		jobNames = append(jobNames, fullName)
+	}
+	
+	if excludedCount > 0 {
+		logger.Debug("过滤掉排除的文件夹下的 job",
+			"排除数量", excludedCount,
+			"剩余数量", len(jobNames),
+		)
 	}
 
 	if len(jobNames) == 0 {
