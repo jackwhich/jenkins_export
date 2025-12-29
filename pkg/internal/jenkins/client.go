@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -27,7 +28,9 @@ type Client struct {
 	password   string
 	timeout    time.Duration
 
-	Job JobClient
+	Job      JobClient
+	SDK      *SDKClient // gojenkins SDK 客户端
+	useSDK   bool       // 是否使用 SDK 模式
 }
 
 // Endpoint returns the Jenkins API endpoint.
@@ -123,7 +126,29 @@ func NewClient(options ...ClientOption) (*Client, error) {
 
 	client.Job = JobClient{client: client}
 
+	// 默认启用 SDK 模式
+	client.useSDK = true
+	if client.useSDK {
+		// 初始化 SDK 客户端（延迟初始化，在需要时创建）
+		// 这里不立即创建，因为需要 logger，在第一次使用时创建
+	}
+
 	return client, nil
+}
+
+// InitSDK initializes the SDK client if not already initialized.
+func (c *Client) InitSDK(logger *slog.Logger) error {
+	if c.SDK != nil {
+		return nil
+	}
+
+	sdk, err := NewSDKClient(c.endpoint, c.username, c.password, c.timeout, logger)
+	if err != nil {
+		return err
+	}
+
+	c.SDK = sdk
+	return nil
 }
 
 // NewRequest creates an HTTP request against the Jenkins API.

@@ -2,57 +2,60 @@
 
 ## 数据获取方式
 
-本 exporter 使用 **Jenkins REST API JSON 方式**获取数据，不是使用 Jenkins SDK。
+本 exporter 使用 **gojenkins SDK** 获取数据，而不是直接调用 REST API。这样可以确保数据获取的准确性和可靠性。
 
-## API 调用流程
+## SDK 使用流程
 
 ### 1. Job Discovery（低频，5分钟）
 
-**获取 job 列表：**
-```
-GET /api/json?depth=1                    # 获取根目录
-GET /job/{folder}/api/json?depth=1       # 获取文件夹内容
-GET /job/{folder}/job/{job}/api/json     # 获取 job 详情
+**使用 gojenkins SDK 获取 job 列表：**
+```go
+jenkins.GetAllJobs(ctx)  // 递归获取所有 job
+job.GetName()            // 获取 job 完整路径（fullName）
 ```
 
 **存储到 SQLite：**
-- 使用 `job.Path`（即 `fullName`）作为 job 名称
+- 使用 `job.GetName()` 获取完整路径作为 job 名称
 - 例如：`"folder/job"` 或 `"folder/subfolder/job"`
 
 ### 2. Build Collector（高频，15秒）
 
-**获取构建信息：**
-```
-GET /job/{folder}/job/{job}/api/json     # 获取 job 信息（包含 lastCompletedBuild）
-GET {build.URL}/api/json                 # 获取构建详情
-```
-
-**路径转换：**
-- 从 SQLite 读取 job 名称（例如 `"folder/job"`）
-- 转换为 API 路径：`/job/folder/job/api/json`
-
-## 可能的问题
-
-### 问题 1: 路径转换错误
-
-如果 job 名称包含特殊字符或格式不正确，路径转换可能失败。
-
-**当前实现：**
+**使用 gojenkins SDK 获取构建信息：**
 ```go
-// jobName: "folder/job"
-pathParts := strings.Split(jobName, "/")
-apiPath := ""
-for _, part := range pathParts {
-    if part != "" {
-        apiPath += "/job/" + part
-    }
-}
-// 结果: "/job/folder/job"
+jenkins.GetJob(ctx, fullName)              // 根据完整路径获取 job
+job.GetLastCompletedBuild(ctx)             // 获取最后一次完成的构建
+build.GetParameters()                      // 获取构建参数
+build.GetResult()                          // 获取构建结果
 ```
 
-### 问题 2: job.Path 格式不一致
+**优势：**
+- SDK 自动处理路径编码和 URL 构建
+- 更可靠的数据解析
+- 更好的错误处理
 
-如果 Jenkins 返回的 `fullName` 格式与预期不符，可能导致路径构建错误。
+## SDK 优势
+
+### 1. 自动路径处理
+
+gojenkins SDK 自动处理 job 路径的编码和构建，无需手动转换：
+```go
+// SDK 自动处理
+job, err := jenkins.GetJob(ctx, "folder/job")
+// 内部自动处理 URL 编码和路径构建
+```
+
+### 2. 更准确的数据解析
+
+SDK 提供了类型安全的方法，避免手动解析 JSON：
+```go
+build.GetResult()        // 直接返回字符串结果
+build.GetBuildNumber()   // 直接返回构建编号
+build.GetParameters()   // 直接返回参数列表
+```
+
+### 3. 更好的错误处理
+
+SDK 提供了更详细的错误信息，便于调试和问题定位。
 
 ## 调试方法
 

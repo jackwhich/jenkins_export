@@ -52,18 +52,23 @@ func StartDiscovery(ctx context.Context, client *Client, repo *storage.JobRepo, 
 func syncJobsOnce(ctx context.Context, client *Client, repo *storage.JobRepo, folders []string, logger *slog.Logger) error {
 	logger.Debug("开始同步 Job 列表")
 
-	// 从 Jenkins 获取所有 job 列表
-	jobClient := client.Job
-	jobs, err := jobClient.All(ctx, folders)
-	if err != nil {
-		return fmt.Errorf("failed to get jobs from Jenkins: %w", err)
+	// 初始化 SDK（如果尚未初始化）
+	if err := client.InitSDK(logger); err != nil {
+		return fmt.Errorf("failed to initialize SDK: %w", err)
 	}
 
-	// 提取 job 名称（使用 Path 作为全名）
-	jobNames := make([]string, 0, len(jobs))
-	for _, job := range jobs {
-		if job.Path != "" {
-			jobNames = append(jobNames, job.Path)
+	// 使用 SDK 获取所有 job 列表
+	sdkJobs, err := client.SDK.GetAllJobs(ctx, folders)
+	if err != nil {
+		return fmt.Errorf("failed to get jobs from Jenkins SDK: %w", err)
+	}
+
+	// 提取 job 名称（使用 GetName() 获取完整路径）
+	jobNames := make([]string, 0, len(sdkJobs))
+	for _, job := range sdkJobs {
+		fullName := job.GetName()
+		if fullName != "" {
+			jobNames = append(jobNames, fullName)
 		}
 	}
 
@@ -79,6 +84,7 @@ func syncJobsOnce(ctx context.Context, client *Client, repo *storage.JobRepo, fo
 
 	logger.Info("Job 列表同步完成",
 		"job 数量", len(jobNames),
+		"使用 SDK", true,
 	)
 
 	return nil

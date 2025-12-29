@@ -145,14 +145,19 @@ func (c *BuildCollector) collectOnce(ctx context.Context) error {
 
 // processJob processes a single job and updates metrics if needed.
 func (c *BuildCollector) processJob(ctx context.Context, job storage.Job) error {
-	// 获取 job 的 lastCompletedBuild
-	build, buildNumber, err := c.client.Job.GetLastCompletedBuild(ctx, job.JobName)
+	// 初始化 SDK（如果尚未初始化）
+	if err := c.client.InitSDK(c.logger); err != nil {
+		return fmt.Errorf("failed to initialize SDK: %w", err)
+	}
+
+	// 使用 SDK 获取 job 的 lastCompletedBuild
+	sdkBuild, buildNumber, err := c.client.SDK.GetLastCompletedBuild(ctx, job.JobName)
 	if err != nil {
 		return fmt.Errorf("failed to get last completed build: %w", err)
 	}
 
 	// 如果没有 completed build，跳过
-	if build == nil {
+	if sdkBuild == nil {
 		c.logger.Debug("job 没有已完成的构建",
 			"job_name", job.JobName,
 		)
@@ -179,10 +184,32 @@ func (c *BuildCollector) processJob(ctx context.Context, job storage.Job) error 
 		return nil
 	}
 
+	// 获取构建详情（包括参数）
+	buildDetails, err := c.client.SDK.GetBuildDetails(ctx, sdkBuild)
+	if err != nil {
+		c.logger.Warn("获取构建详情失败，使用基本信息",
+			"job_name", job.JobName,
+			"error", err,
+		)
+		// 即使获取详情失败，也使用基本信息
+		buildDetails = &BuildDetails{
+			Number:    buildNumber,
+			Result:    sdkBuild.GetResult(),
+			Building:  sdkBuild.IsRunning(ctx),
+			Parameters: make(map[string]string),
+		}
+	}
+
 	// 解析构建结果
-	status := parseBuildStatus(build.Result, build.Building)
-	checkCommitID := extractParameter(build, "check_commitID")
-	gitBranch := extractParameter(build, "gitBranch")
+	status := parseBuildStatus(buildDetails.Result, buildDetails.Building)
+	checkCommitID := buildDetails.Parameters["check_commitID"]
+	if checkCommitID == "" {
+		checkCommitID = buildDetails.Parameters["GIT_COMMIT"]
+	}
+	gitBranch := buildDetails.Parameters["gitBranch"]
+	if gitBranch == "" {
+		gitBranch = buildDetails.Parameters["GIT_BRANCH"]
+	}
 
 	// 更新指标
 	c.mu.Lock()
@@ -206,6 +233,7 @@ func (c *BuildCollector) processJob(ctx context.Context, job storage.Job) error 
 		"job_name", job.JobName,
 		"build_number", buildNumber,
 		"status", status,
+		"使用 SDK", true,
 	)
 
 	return nil
@@ -234,7 +262,7 @@ func parseBuildStatus(result string, building bool) string {
 	}
 }
 
-// extractParameter extracts a parameter value from build actions.
+// extractParameter extracts a parameter value from build actions (legacy method, kept for compatibility).
 func extractParameter(build *Build, paramName string) string {
 	if build == nil {
 		return ""
