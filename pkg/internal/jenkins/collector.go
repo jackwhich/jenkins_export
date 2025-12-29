@@ -15,11 +15,11 @@ import (
 
 // BuildCollector manages the collection of build results from Jenkins.
 type BuildCollector struct {
-	client        *Client
-	repo          *storage.JobRepo
-	logger        *slog.Logger
+	client           *Client
+	repo             *storage.JobRepo
+	logger           *slog.Logger
 	buildResultGauge *prometheus.GaugeVec
-	mu            sync.RWMutex
+	mu               sync.RWMutex
 }
 
 // NewBuildCollector creates a new BuildCollector instance.
@@ -364,4 +364,3 @@ func extractParameter(build *Build, paramName string) string {
 	}
 	return ""
 }
-

@@ -86,7 +86,37 @@ func (c *SDKClient) GetJobByFullName(ctx context.Context, fullName string) (*goj
 	// gojenkins 的 GetJob 方法支持完整路径
 	job, err := c.jenkins.GetJob(ctx, fullName)
 	if err != nil {
+		// 检查错误信息，判断是否是 HTML 响应（可能是认证失败、404、权限问题等）
+		errMsg := err.Error()
+		if strings.Contains(errMsg, "invalid character '<'") || strings.Contains(errMsg, "looking for beginning of value") {
+			// 可能是文件夹而不是实际的 job，或者权限问题
+			c.logger.Debug("获取 job 失败，可能是文件夹或权限问题",
+				"job_name", fullName,
+				"错误", errMsg,
+			)
+			return nil, fmt.Errorf("job %s 可能不存在、是文件夹或权限不足（返回了 HTML 而非 JSON）: %w", fullName, err)
+		}
 		return nil, fmt.Errorf("failed to get job %s: %w", fullName, err)
+	}
+
+	// 检查 job 是否是文件夹（Folder 类型）
+	// gojenkins 中，文件夹也有 GetName() 方法，但可能没有构建
+	// 注意：Raw 字段可能不存在，需要安全访问
+	if job.Raw != nil {
+		jobClass := job.Raw.Class
+		if jobClass != "" {
+			c.logger.Debug("job 类型",
+				"job_name", fullName,
+				"class", jobClass,
+			)
+			// 如果是文件夹类型，可能需要特殊处理
+			if strings.Contains(jobClass, "Folder") {
+				c.logger.Debug("检测到文件夹类型，跳过",
+					"job_name", fullName,
+				)
+				return nil, fmt.Errorf("job %s 是文件夹类型，不是实际的构建 job", fullName)
+			}
+		}
 	}
 
 	return job, nil
