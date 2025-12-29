@@ -460,16 +460,38 @@ func (c *SDKClient) GetJobByFullName(ctx context.Context, fullName string) (*goj
 		"说明", "如果 job 在文件夹下，路径格式为 folder/job；如果是顶层 job，就是 job 名称本身",
 	)
 	
+	// 记录实际使用的路径（用于调试）
+	c.logger.Debug("调用 gojenkins SDK GetJob",
+		"full_name", fullName,
+		"说明", "gojenkins SDK 会自动将 folder/job 转换为 /job/folder/job/job 格式的 URL",
+	)
+	
 	job, err := c.jenkins.GetJob(ctx, fullName)
 	if err != nil {
 		// 检查错误信息，判断是否是 HTML 响应（可能是认证失败、404、权限问题等）
 		errMsg := err.Error()
+		
+		// 尝试从错误中提取更多信息
+		// gojenkins SDK 内部可能会返回包含 URL 的错误信息
+		c.logger.Debug("gojenkins SDK GetJob 调用失败",
+			"job_name", fullName,
+			"错误类型", fmt.Sprintf("%T", err),
+			"错误信息", errMsg,
+			"说明", "如果返回 HTML 而非 JSON，可能是：1) job 是文件夹 2) job 不存在 3) 权限不足 4) 路径格式不正确",
+		)
+		
 		if strings.Contains(errMsg, "invalid character '<'") || strings.Contains(errMsg, "looking for beginning of value") {
 			// 可能是文件夹而不是实际的 job，或者权限问题，或者路径不正确
-			c.logger.Debug("获取 job 失败，可能是文件夹、权限问题或路径不正确",
+			c.logger.Debug("获取 job 失败，返回了 HTML 而非 JSON",
 				"job_name", fullName,
 				"错误", errMsg,
-				"提示", "如果 job 在文件夹下，确保使用完整路径格式 folder/job",
+				"可能原因", []string{
+					"job 是文件夹类型（应该在 Discovery 阶段被过滤）",
+					"job 不存在或路径不正确",
+					"权限不足，返回了错误页面",
+					"gojenkins SDK 路径转换有问题",
+				},
+				"建议", "检查 Discovery 日志，确认这个 job 是否被正确识别为构建 job",
 			)
 			return nil, fmt.Errorf("job %s 可能不存在、是文件夹或权限不足（返回了 HTML 而非 JSON）: %w", fullName, err)
 		}
