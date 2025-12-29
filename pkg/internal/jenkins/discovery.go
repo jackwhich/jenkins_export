@@ -50,15 +50,17 @@ func StartDiscovery(ctx context.Context, client *Client, repo *storage.JobRepo, 
 
 // syncJobsOnce performs a single synchronization of jobs from Jenkins to SQLite.
 func syncJobsOnce(ctx context.Context, client *Client, repo *storage.JobRepo, folders []string, logger *slog.Logger) error {
-	logger.Debug("开始同步 Job 列表")
+	logger.Debug("开始同步 Job 列表",
+		"指定文件夹", folders,
+	)
 
 	// 初始化 SDK（如果尚未初始化）
 	if err := client.InitSDK(logger); err != nil {
 		return fmt.Errorf("failed to initialize SDK: %w", err)
 	}
 
-	// 使用 SDK 获取所有 job 列表
-	sdkJobs, err := client.SDK.GetAllJobs(ctx, folders)
+	// 使用 SDK 递归获取所有 job（包括文件夹下的所有 job）
+	sdkJobs, err := client.SDK.GetAllJobsRecursive(ctx, folders, logger)
 	if err != nil {
 		return fmt.Errorf("failed to get jobs from Jenkins SDK: %w", err)
 	}
@@ -73,9 +75,16 @@ func syncJobsOnce(ctx context.Context, client *Client, repo *storage.JobRepo, fo
 	}
 
 	if len(jobNames) == 0 {
-		logger.Warn("从 Jenkins 获取到的 job 列表为空")
+		logger.Warn("从 Jenkins 获取到的 job 列表为空",
+			"指定文件夹", folders,
+		)
 		return nil
 	}
+
+	logger.Debug("从 Jenkins 获取到 job 列表",
+		"job 数量", len(jobNames),
+		"指定文件夹", folders,
+	)
 
 	// 同步到 SQLite
 	if err := repo.SyncJobs(jobNames); err != nil {
@@ -84,7 +93,8 @@ func syncJobsOnce(ctx context.Context, client *Client, repo *storage.JobRepo, fo
 
 	logger.Info("Job 列表同步完成",
 		"job 数量", len(jobNames),
-		"使用 SDK", true,
+		"指定文件夹", folders,
+		"使用方式", "SDK（递归获取文件夹下的所有 job）",
 	)
 
 	return nil

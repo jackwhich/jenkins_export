@@ -41,8 +41,116 @@ func NewSDKClient(endpoint, username, password string, timeout time.Duration, lo
 	}, nil
 }
 
+// GetAllJobsRecursive recursively gets all jobs from specified folders, filtering out folder-type jobs.
+func (c *SDKClient) GetAllJobsRecursive(ctx context.Context, folderNames []string, logger *slog.Logger) ([]*gojenkins.Job, error) {
+	allJobs := make([]*gojenkins.Job, 0)
+
+	// 如果没有指定文件夹，获取根目录下的所有内容
+	if len(folderNames) == 0 {
+		// 获取根目录下的所有 job（包括文件夹）
+		rootJobs, err := c.jenkins.GetAllJobs(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get root jobs: %w", err)
+		}
+
+		// 递归处理每个 job（可能是文件夹或实际 job）
+		for _, job := range rootJobs {
+			jobs, err := c.recursiveGetJobs(ctx, job, logger)
+			if err != nil {
+				logger.Warn("递归获取 job 失败",
+					"job_name", job.GetName(),
+					"error", err,
+				)
+				continue
+			}
+			allJobs = append(allJobs, jobs...)
+		}
+	} else {
+		// 如果指定了文件夹，只处理这些文件夹
+		for _, folderName := range folderNames {
+			// 获取文件夹
+			folderJob, err := c.jenkins.GetJob(ctx, folderName)
+			if err != nil {
+				logger.Warn("获取文件夹失败",
+					"folder_name", folderName,
+					"error", err,
+				)
+				continue
+			}
+
+			// 递归获取文件夹下的所有 job
+			jobs, err := c.recursiveGetJobs(ctx, folderJob, logger)
+			if err != nil {
+				logger.Warn("递归获取文件夹下的 job 失败",
+					"folder_name", folderName,
+					"error", err,
+				)
+				continue
+			}
+			allJobs = append(allJobs, jobs...)
+		}
+	}
+
+	logger.Info("递归获取 job 列表完成",
+		"总数", len(allJobs),
+		"指定文件夹", folderNames,
+	)
+
+	return allJobs, nil
+}
+
+// recursiveGetJobs recursively gets all jobs from a job (which might be a folder).
+func (c *SDKClient) recursiveGetJobs(ctx context.Context, job *gojenkins.Job, logger *slog.Logger) ([]*gojenkins.Job, error) {
+	allJobs := make([]*gojenkins.Job, 0)
+
+	// 检查是否是文件夹类型
+	isFolder := false
+	if job.Raw != nil {
+		jobClass := job.Raw.Class
+		if jobClass != "" && strings.Contains(jobClass, "Folder") {
+			isFolder = true
+		}
+	}
+
+	if isFolder {
+		// 如果是文件夹，获取文件夹下的所有内容
+		// gojenkins 使用 GetInnerJobs(ctx) 获取文件夹下的子项
+		if job.Raw != nil && job.Raw.Jobs != nil {
+			subJobs, err := job.GetInnerJobs(ctx)
+			if err != nil {
+				// 如果获取失败，可能不是文件夹或没有权限
+				logger.Debug("获取文件夹下的子项失败",
+					"folder_name", job.GetName(),
+					"error", err,
+				)
+				return allJobs, nil // 返回空列表，不中断
+			}
+
+			// 递归处理每个子项
+			for _, subJob := range subJobs {
+				jobs, err := c.recursiveGetJobs(ctx, subJob, logger)
+				if err != nil {
+					logger.Debug("递归获取子 job 失败",
+						"parent", job.GetName(),
+						"child", subJob.GetName(),
+						"error", err,
+					)
+					continue
+				}
+				allJobs = append(allJobs, jobs...)
+			}
+		}
+	} else {
+		// 如果不是文件夹，就是实际的构建 job，直接添加
+		allJobs = append(allJobs, job)
+	}
+
+	return allJobs, nil
+}
+
 // GetAllJobs returns all jobs recursively, optionally filtered by folder names.
 // It filters out folder-type jobs and only returns actual build jobs.
+// Deprecated: Use GetAllJobsRecursive instead.
 func (c *SDKClient) GetAllJobs(ctx context.Context, folderNames []string) ([]*gojenkins.Job, error) {
 	allJobs := make([]*gojenkins.Job, 0)
 
