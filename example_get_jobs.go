@@ -37,8 +37,8 @@ func main() {
 
 	jenkins := gojenkins.CreateJenkins(nil, jenkinsURL, username, password)
 
-	// 2. 初始化连接
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// 2. 初始化连接（增加超时时间到 5 分钟，因为递归获取可能需要较长时间）
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	_, err := jenkins.Init(ctx)
@@ -84,14 +84,31 @@ func main() {
 		
 		// 递归获取文件夹下的所有 job
 		fmt.Println("开始递归获取文件夹下的所有 job...")
+		fmt.Println("提示: 如果 job 很多，可能需要较长时间，请耐心等待...")
 		allJobsInFolder := getAllJobsRecursive(ctx, folderJob, 0)
+		
+		// 检查是否超时
+		if ctx.Err() == context.DeadlineExceeded {
+			fmt.Printf("\n⚠️  操作超时！已获取到 %d 个 job（可能还有更多）\n", len(allJobsInFolder))
+			fmt.Println("建议: 增加超时时间或分批处理")
+		}
+		
 		fmt.Printf("\n文件夹 %s 下共有 %d 个 job:\n", folderName, len(allJobsInFolder))
 		if len(allJobsInFolder) > 0 {
-			for i, job := range allJobsInFolder {
-				fmt.Printf("%d. %s\n", i+1, job.GetName())
+			// 只显示前 20 个，避免输出过长
+			maxShow := 20
+			if len(allJobsInFolder) > maxShow {
+				for i := 0; i < maxShow; i++ {
+					fmt.Printf("%d. %s\n", i+1, allJobsInFolder[i].GetName())
+				}
+				fmt.Printf("... (还有 %d 个 job 未显示)\n", len(allJobsInFolder)-maxShow)
+			} else {
+				for i, job := range allJobsInFolder {
+					fmt.Printf("%d. %s\n", i+1, job.GetName())
+				}
 			}
 		} else {
-			fmt.Println("  (文件夹下没有找到实际的构建 job)")
+			fmt.Println("  (文件夹下没有找到实际的构建 job 或获取超时)")
 		}
 	}
 
@@ -152,6 +169,12 @@ func getAllJobsRecursive(ctx context.Context, job *gojenkins.Job, depth int) []*
 	allJobs := make([]*gojenkins.Job, 0)
 	indent := strings.Repeat("  ", depth)
 
+	// 检查 context 是否已超时
+	if ctx.Err() != nil {
+		fmt.Printf("%s⚠️  操作超时，停止处理\n", indent)
+		return allJobs
+	}
+
 	// 检查是否是文件夹
 	if isFolder(job) {
 		fmt.Printf("%s📁 处理文件夹: %s\n", indent, job.GetName())
@@ -159,16 +182,37 @@ func getAllJobsRecursive(ctx context.Context, job *gojenkins.Job, depth int) []*
 		// 如果是文件夹，获取文件夹下的所有子项
 		if job.Raw != nil && job.Raw.Jobs != nil {
 			fmt.Printf("%s  正在获取子项...\n", indent)
-			subJobs, err := job.GetInnerJobs(ctx)
+			
+			// 为每个操作创建子 context，避免单个操作超时影响整体
+			subCtx, subCancel := context.WithTimeout(ctx, 30*time.Second)
+			subJobs, err := job.GetInnerJobs(subCtx)
+			subCancel()
+			
 			if err != nil {
-				fmt.Printf("%s  ⚠️  获取子项失败: %v\n", indent, err)
+				// 检查是否是超时错误
+				if ctx.Err() == context.DeadlineExceeded {
+					fmt.Printf("%s  ⚠️  获取子项超时（可能是 job 太多，建议增加超时时间）: %v\n", indent, err)
+				} else {
+					fmt.Printf("%s  ⚠️  获取子项失败: %v\n", indent, err)
+				}
 				return allJobs
 			}
 
 			fmt.Printf("%s  找到 %d 个子项\n", indent, len(subJobs))
 			
-			// 递归处理每个子项
+			// 递归处理每个子项（限制深度，避免过深递归）
+			if depth > 10 {
+				fmt.Printf("%s  ⚠️  递归深度过深，停止递归\n", indent)
+				return allJobs
+			}
+			
 			for i, subJob := range subJobs {
+				// 检查 context 是否已超时
+				if ctx.Err() != nil {
+					fmt.Printf("%s  ⚠️  操作超时，已处理 %d/%d 个子项\n", indent, i, len(subJobs))
+					break
+				}
+				
 				fmt.Printf("%s  处理子项 %d/%d: %s\n", indent, i+1, len(subJobs), subJob.GetName())
 				jobs := getAllJobsRecursive(ctx, subJob, depth+1)
 				allJobs = append(allJobs, jobs...)
