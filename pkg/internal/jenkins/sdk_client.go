@@ -42,6 +42,7 @@ func NewSDKClient(endpoint, username, password string, timeout time.Duration, lo
 }
 
 // GetAllJobs returns all jobs recursively, optionally filtered by folder names.
+// It filters out folder-type jobs and only returns actual build jobs.
 func (c *SDKClient) GetAllJobs(ctx context.Context, folderNames []string) ([]*gojenkins.Job, error) {
 	allJobs := make([]*gojenkins.Job, 0)
 
@@ -51,6 +52,63 @@ func (c *SDKClient) GetAllJobs(ctx context.Context, folderNames []string) ([]*go
 		return nil, fmt.Errorf("failed to get all jobs: %w", err)
 	}
 
+	c.logger.Debug("SDK 返回的原始 job 列表",
+		"总数", len(jobs),
+	)
+
+	// 过滤掉文件夹类型的 job，只保留实际的构建 job
+	filteredJobs := make([]*gojenkins.Job, 0)
+	folderCount := 0
+	
+	for _, job := range jobs {
+		// 检查 job 是否是文件夹类型
+		isFolder := false
+		
+		// 方法1: 检查 Raw.Class 字段
+		if job.Raw != nil {
+			jobClass := job.Raw.Class
+			if jobClass != "" {
+				// 如果是文件夹类型，跳过
+				if strings.Contains(jobClass, "Folder") {
+					isFolder = true
+					folderCount++
+					c.logger.Debug("跳过文件夹类型的 job",
+						"job_name", job.GetName(),
+						"class", jobClass,
+					)
+				}
+			}
+		}
+		
+		// 方法2: 尝试获取构建信息，如果失败可能是文件夹
+		if !isFolder {
+			// 尝试获取最后一次构建，如果失败且是特定错误，可能是文件夹
+			_, err := job.GetLastCompletedBuild(ctx)
+			if err != nil {
+				errMsg := err.Error()
+				// 如果是 404 或找不到构建，可能是文件夹
+				if strings.Contains(errMsg, "404") || 
+				   strings.Contains(errMsg, "not found") ||
+				   strings.Contains(errMsg, "invalid character '<'") {
+					// 进一步检查：如果 job 没有构建历史，可能是文件夹
+					// 但有些 job 确实没有构建，所以不能完全依赖这个
+					// 主要依赖 class 字段判断
+				}
+			}
+		}
+		
+		// 如果不是文件夹，添加到结果列表
+		if !isFolder {
+			filteredJobs = append(filteredJobs, job)
+		}
+	}
+
+	c.logger.Debug("过滤后的 job 列表",
+		"原始总数", len(jobs),
+		"文件夹数量", folderCount,
+		"实际 job 数量", len(filteredJobs),
+	)
+
 	// 如果指定了文件夹，进行过滤
 	if len(folderNames) > 0 {
 		folderSet := make(map[string]bool)
@@ -58,7 +116,7 @@ func (c *SDKClient) GetAllJobs(ctx context.Context, folderNames []string) ([]*go
 			folderSet[name] = true
 		}
 
-		for _, job := range jobs {
+		for _, job := range filteredJobs {
 			// 检查 job 是否在指定的文件夹下
 			fullName := job.GetName()
 			parts := strings.Split(fullName, "/")
@@ -70,11 +128,14 @@ func (c *SDKClient) GetAllJobs(ctx context.Context, folderNames []string) ([]*go
 			}
 		}
 	} else {
-		allJobs = jobs
+		allJobs = filteredJobs
 	}
 
-	c.logger.Debug("获取到 job 列表",
-		"总数", len(allJobs),
+	c.logger.Info("获取到 job 列表",
+		"原始总数", len(jobs),
+		"文件夹数量", folderCount,
+		"过滤后总数", len(filteredJobs),
+		"最终返回数量", len(allJobs),
 		"指定文件夹", folderNames,
 	)
 
