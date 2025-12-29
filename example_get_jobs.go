@@ -95,17 +95,9 @@ func main() {
 		
 		fmt.Printf("\n文件夹 %s 下共有 %d 个 job:\n", folderName, len(allJobsInFolder))
 		if len(allJobsInFolder) > 0 {
-			// 只显示前 20 个，避免输出过长
-			maxShow := 20
-			if len(allJobsInFolder) > maxShow {
-				for i := 0; i < maxShow; i++ {
-					fmt.Printf("%d. %s\n", i+1, allJobsInFolder[i].GetName())
-				}
-				fmt.Printf("... (还有 %d 个 job 未显示)\n", len(allJobsInFolder)-maxShow)
-			} else {
-				for i, job := range allJobsInFolder {
-					fmt.Printf("%d. %s\n", i+1, job.GetName())
-				}
+			// 显示所有 job（不限制数量）
+			for i, job := range allJobsInFolder {
+				fmt.Printf("%d. %s\n", i+1, job.GetName())
 			}
 		} else {
 			fmt.Println("  (文件夹下没有找到实际的构建 job 或获取超时)")
@@ -200,12 +192,7 @@ func getAllJobsRecursive(ctx context.Context, job *gojenkins.Job, depth int) []*
 
 			fmt.Printf("%s  找到 %d 个子项\n", indent, len(subJobs))
 			
-			// 递归处理每个子项（限制深度，避免过深递归）
-			if depth > 10 {
-				fmt.Printf("%s  ⚠️  递归深度过深，停止递归\n", indent)
-				return allJobs
-			}
-			
+			// 递归处理每个子项（不限制深度，获取所有 job）
 			for i, subJob := range subJobs {
 				// 检查 context 是否已超时
 				if ctx.Err() != nil {
