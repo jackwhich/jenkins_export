@@ -346,53 +346,10 @@ def main():
         default="http://localhost:9506/metrics",
         help="Prometheus 指标 URL (默认: http://localhost:9506/metrics)"
     )
-    parser.add_argument(
-        "--create-sample",
-        action="store_true",
-        help="创建示例数据（用于测试）"
-    )
 
     args = parser.parse_args()
 
     tester = JenkinsExporterTester(args.sqlite_path, args.metrics_url)
-
-    if args.create_sample:
-        # 创建示例数据
-        print("创建示例数据...")
-        if tester.connect_db():
-            cursor = tester.conn.cursor()
-            now = int(datetime.now().timestamp())
-            
-            # 插入示例 jobs
-            sample_jobs = [
-                ("test/job1", 1, 10, now, now),
-                ("test/job2", 1, 25, now, now),
-                ("test/job3", 1, 0, now, now),
-                ("deleted/job4", 0, 5, now - 3600, now - 3600),
-            ]
-            
-            cursor.executemany("""
-                INSERT OR REPLACE INTO jobs 
-                (job_name, enabled, last_seen_build, last_sync_time, created_at)
-                VALUES (?, ?, ?, ?, ?)
-            """, sample_jobs)
-            
-            # 插入示例变更
-            sample_changes = [
-                ("test/job1", "ADD", now),
-                ("test/job2", "ADD", now),
-                ("deleted/job4", "DELETE", now - 3600),
-            ]
-            
-            cursor.executemany("""
-                INSERT INTO job_changes (job_name, action, event_time)
-                VALUES (?, ?, ?)
-            """, sample_changes)
-            
-            tester.conn.commit()
-            print("✅ 示例数据创建完成")
-            tester.close()
-            return
 
     # 运行测试
     try:

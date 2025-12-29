@@ -28,18 +28,6 @@ python3 test_data.py \
   --metrics-url http://localhost:9506/metrics
 ```
 
-### 创建示例数据
-
-用于测试和开发：
-
-```bash
-python3 test_data.py --create-sample --sqlite-path test.db
-```
-
-这会创建：
-- 4 个示例 job（3 个启用，1 个禁用）
-- 3 条变更记录
-
 ### 测试内容
 
 脚本会测试以下内容：
