@@ -14,9 +14,9 @@ import (
 func main() {
 	// 1. 创建 Jenkins 客户端
 	// ⚠️ 请修改为你的 Jenkins 连接信息
-	jenkinsURL := "http://jenkins.example.com" // 改为你的 Jenkins URL
-	username := "your_username"                // 改为你的用户名
-	password := "your_password"                // 改为你的密码
+	jenkinsURL := "http://dc-tw-ebpay-pro-jenkins.zfit999.com" // 改为你的 Jenkins URL
+	username := "jenkins-pre"                // 改为你的用户名
+	password := "11b213bd6996f9dceb2623860158bcab71"                // 改为你的密码
 
 	// 或者从环境变量读取
 	if jenkinsURL == "http://jenkins.example.com" {
@@ -72,7 +72,7 @@ func main() {
 	fmt.Println("使用 SDK 方法: jenkins.GetJob() -> job.GetInnerJobs()")
 	folderName := "prod-gray-ebpay"
 	fmt.Printf("正在获取文件夹: %s\n", folderName)
-	
+
 	folderJob, err := jenkins.GetJob(ctx, folderName) // SDK 方法
 	if err != nil {
 		fmt.Printf("⚠️  获取文件夹失败: %v\n", err)
@@ -110,38 +110,78 @@ func main() {
 	// 6. 获取指定 job 的详细信息
 	fmt.Println("\n=== 方法3: 获取指定 job 的详细信息 ===")
 	fmt.Println("使用 SDK 方法: jenkins.GetJob()")
-	specificJobName := "prod-gray-ebpay/gray-prod-mkt-thirdpart-api"
-	fmt.Printf("正在获取 job: %s\n", specificJobName)
 	
-	job, err := jenkins.GetJob(ctx, specificJobName) // SDK 方法
-	if err != nil {
-		fmt.Printf("⚠️  获取 job 失败: %v\n", err)
-		fmt.Println("跳过方法3，继续执行其他方法...")
-	} else {
-		fmt.Printf("✅ 成功获取 job: %s\n", specificJobName)
-		printJobDetails(job, ctx)
+	// 从方法2获取的job列表中取一个来测试
+	if len(allJobsInFolder) > 0 {
+		// 使用第一个job来测试
+		testJob := allJobsInFolder[0]
+		specificJobName := testJob.GetName()
+		fmt.Printf("正在获取 job: %s\n", specificJobName)
+		fmt.Printf("提示: 使用从方法2获取到的job名称，确保路径正确\n")
 
-		// 7. 获取 job 的最后一次构建
-		fmt.Println("\n=== 方法4: 获取 job 的最后一次构建 ===")
-		lastBuild, err := job.GetLastCompletedBuild(ctx)
+		// 方法1: 直接使用从GetInnerJobs获取的job对象（推荐）
+		fmt.Println("\n方法3a: 直接使用已获取的job对象（推荐）")
+		printJobDetails(testJob, ctx)
+
+		// 方法2: 通过job名称重新获取（测试）
+		fmt.Println("\n方法3b: 通过job名称重新获取（测试）")
+		job, err := jenkins.GetJob(ctx, specificJobName) // SDK 方法
 		if err != nil {
-			fmt.Printf("⚠️  获取最后构建失败: %v\n", err)
+			fmt.Printf("⚠️  通过名称重新获取失败: %v\n", err)
+			fmt.Printf("   建议: 直接使用已获取的job对象，避免重复获取\n")
 		} else {
-			fmt.Printf("✅ 成功获取最后构建\n")
-			fmt.Printf("最后构建编号: #%d\n", lastBuild.GetBuildNumber())
-			fmt.Printf("构建结果: %s\n", lastBuild.GetResult())
-			fmt.Printf("构建时间: %v\n", lastBuild.GetTimestamp())
-			fmt.Printf("构建时长: %d ms\n", lastBuild.GetDuration())
+			fmt.Printf("✅ 成功通过名称获取 job: %s\n", specificJobName)
+			printJobDetails(job, ctx)
+		}
+	} else {
+		fmt.Println("⚠️  方法2没有获取到job，跳过方法3")
+	}
+	
+	// 原来的测试代码（如果方法2失败时使用）
+	if len(allJobsInFolder) == 0 {
+		specificJobName := "prod-gray-ebpay/gray-prod-mkt-thirdpart-api"
+		fmt.Printf("\n尝试获取指定 job: %s\n", specificJobName)
+		job, err := jenkins.GetJob(ctx, specificJobName) // SDK 方法
+		if err != nil {
+			fmt.Printf("⚠️  获取 job 失败: %v\n", err)
+			fmt.Printf("   可能原因:\n")
+			fmt.Printf("   1. job 路径格式不正确\n")
+			fmt.Printf("   2. job 不存在或权限不足\n")
+			fmt.Printf("   3. SDK 在处理嵌套路径时有问题\n")
+			fmt.Printf("   建议: 使用方法2获取job列表，然后直接使用job对象\n")
+		} else {
+			fmt.Printf("✅ 成功获取 job: %s\n", specificJobName)
+			printJobDetails(job, ctx)
 
-			// 获取构建参数
-			params := lastBuild.GetParameters()
-			if len(params) > 0 {
-				fmt.Println("构建参数:")
-				for _, param := range params {
-					fmt.Printf("  - %s: %v\n", param.Name, param.Value)
+		// 7. 获取 job 的最后一次构建（使用已获取的job对象）
+		if len(allJobsInFolder) > 0 {
+			fmt.Println("\n=== 方法4: 获取 job 的最后一次构建 ===")
+			testJob := allJobsInFolder[0]
+			fmt.Printf("使用 job: %s\n", testJob.GetName())
+			
+			lastBuild, err := testJob.GetLastCompletedBuild(ctx)
+			if err != nil {
+				fmt.Printf("⚠️  获取最后构建失败: %v\n", err)
+				if strings.Contains(err.Error(), "404") || strings.Contains(err.Error(), "not found") {
+					fmt.Printf("   说明: 该 job 还没有已完成的构建\n")
 				}
 			} else {
-				fmt.Println("构建参数: 无")
+				fmt.Printf("✅ 成功获取最后构建\n")
+				fmt.Printf("最后构建编号: #%d\n", lastBuild.GetBuildNumber())
+				fmt.Printf("构建结果: %s\n", lastBuild.GetResult())
+				fmt.Printf("构建时间: %v\n", lastBuild.GetTimestamp())
+				fmt.Printf("构建时长: %d ms\n", lastBuild.GetDuration())
+
+				// 获取构建参数
+				params := lastBuild.GetParameters()
+				if len(params) > 0 {
+					fmt.Println("构建参数:")
+					for _, param := range params {
+						fmt.Printf("  - %s: %v\n", param.Name, param.Value)
+					}
+				} else {
+					fmt.Println("构建参数: 无")
+				}
 			}
 		}
 	}
@@ -178,11 +218,11 @@ func getAllJobsRecursive(ctx context.Context, job *gojenkins.Job, depth int) []*
 		// 如果是文件夹，获取文件夹下的所有子项
 		if job.Raw != nil && job.Raw.Jobs != nil {
 			fmt.Printf("%s  正在获取子项（使用 SDK: job.GetInnerJobs()）...\n", indent)
-			
+
 			// 为每个操作创建子 context，避免单个操作超时影响整体
 			// 注意: GetInnerJobs() 是 SDK 方法，内部会调用 REST API
 			subCtx, subCancel := context.WithTimeout(ctx, 60*time.Second) // 增加到 60 秒
-			subJobs, err := job.GetInnerJobs(subCtx) // 这是 SDK 方法
+			subJobs, err := job.GetInnerJobs(subCtx)                      // 这是 SDK 方法
 			subCancel()
 
 			if err != nil {
