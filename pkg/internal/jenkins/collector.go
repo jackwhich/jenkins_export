@@ -104,7 +104,7 @@ func isExcludedFolder(jobName string) bool {
 
 // collectOnce performs a single collection cycle.
 func (c *BuildCollector) collectOnce(ctx context.Context) error {
-	c.logger.Debug("开始采集构建结果")
+	c.logger.Info("开始采集构建结果")
 
 	// 从 SQLite 读取 enabled=1 的 job
 	jobs, err := c.repo.ListEnabledJobs()
@@ -112,8 +112,12 @@ func (c *BuildCollector) collectOnce(ctx context.Context) error {
 		return fmt.Errorf("failed to list enabled jobs: %w", err)
 	}
 
+	c.logger.Info("从 SQLite 读取到 job 列表",
+		"总数", len(jobs),
+	)
+
 	if len(jobs) == 0 {
-		c.logger.Debug("没有启用的 job 需要采集")
+		c.logger.Warn("没有启用的 job 需要采集，请检查 SQLite 数据库或等待 Discovery 同步完成")
 		return nil
 	}
 
@@ -136,7 +140,7 @@ func (c *BuildCollector) collectOnce(ctx context.Context) error {
 	c.mu.Unlock()
 
 	if excludedCount > 0 {
-		c.logger.Debug("过滤掉排除的文件夹下的 job",
+		c.logger.Info("过滤掉排除的文件夹下的 job",
 			"排除数量", excludedCount,
 			"剩余数量", len(filteredJobs),
 		)
@@ -145,7 +149,7 @@ func (c *BuildCollector) collectOnce(ctx context.Context) error {
 	jobs = filteredJobs
 
 	if len(jobs) == 0 {
-		c.logger.Debug("过滤后没有启用的 job 需要采集")
+		c.logger.Warn("过滤后没有启用的 job 需要采集，可能所有 job 都被过滤掉了")
 		return nil
 	}
 
@@ -178,6 +182,12 @@ func (c *BuildCollector) collectOnce(ctx context.Context) error {
 			break
 		}
 
+		c.logger.Debug("开始处理 job",
+			"job_name", job.JobName,
+			"序号", processedCount+1,
+			"总数", len(jobs),
+		)
+
 		result, err := c.processJob(ctx, job)
 		if err != nil {
 			// 如果是 context canceled，不记录为错误（优雅关闭）
@@ -196,6 +206,12 @@ func (c *BuildCollector) collectOnce(ctx context.Context) error {
 		}
 
 		processedCount++
+
+		c.logger.Debug("job 处理完成",
+			"job_name", job.JobName,
+			"有结果", result != nil,
+			"已处理总数", processedCount,
+		)
 
 		// 根据处理结果统计
 		if result != nil {
