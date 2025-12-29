@@ -14,10 +14,10 @@ import (
 func main() {
 	// 1. 创建 Jenkins 客户端
 	// ⚠️ 请修改为你的 Jenkins 连接信息
-	jenkinsURL := "http://jenkins.example.com"  // 改为你的 Jenkins URL
-	username := "your_username"                  // 改为你的用户名
-	password := "your_password"                  // 改为你的密码
-	
+	jenkinsURL := "http://jenkins.example.com" // 改为你的 Jenkins URL
+	username := "your_username"                // 改为你的用户名
+	password := "your_password"                // 改为你的密码
+
 	// 或者从环境变量读取
 	if jenkinsURL == "http://jenkins.example.com" {
 		if url := os.Getenv("JENKINS_URL"); url != "" {
@@ -46,6 +46,8 @@ func main() {
 		log.Fatalf("连接 Jenkins 失败: %v", err)
 	}
 	fmt.Println("✅ 成功连接到 Jenkins")
+	fmt.Println("📝 说明: 使用 gojenkins SDK，SDK 内部通过 REST API 实现")
+	fmt.Println("   错误信息中显示的 API 调用是 SDK 内部的正常行为\n")
 
 	// 3. 获取所有顶层 job
 	fmt.Println("\n=== 方法1: 获取所有顶层 job ===")
@@ -67,32 +69,33 @@ func main() {
 
 	// 5. 获取指定文件夹下的所有 job（递归）
 	fmt.Println("\n=== 方法2: 递归获取指定文件夹下的所有 job ===")
+	fmt.Println("使用 SDK 方法: jenkins.GetJob() -> job.GetInnerJobs()")
 	folderName := "prod-gray-ebpay"
 	fmt.Printf("正在获取文件夹: %s\n", folderName)
 	
-	folderJob, err := jenkins.GetJob(ctx, folderName)
+	folderJob, err := jenkins.GetJob(ctx, folderName) // SDK 方法
 	if err != nil {
 		fmt.Printf("⚠️  获取文件夹失败: %v\n", err)
 		fmt.Println("跳过方法2，继续执行其他方法...")
 	} else {
 		fmt.Printf("✅ 成功获取文件夹: %s\n", folderName)
-		
+
 		// 显示文件夹信息
 		if folderJob.Raw != nil {
 			fmt.Printf("文件夹类型: %s\n", folderJob.Raw.Class)
 		}
-		
+
 		// 递归获取文件夹下的所有 job
 		fmt.Println("开始递归获取文件夹下的所有 job...")
 		fmt.Println("提示: 如果 job 很多，可能需要较长时间，请耐心等待...")
 		allJobsInFolder := getAllJobsRecursive(ctx, folderJob, 0)
-		
+
 		// 检查是否超时
 		if ctx.Err() == context.DeadlineExceeded {
 			fmt.Printf("\n⚠️  操作超时！已获取到 %d 个 job（可能还有更多）\n", len(allJobsInFolder))
 			fmt.Println("建议: 增加超时时间或分批处理")
 		}
-		
+
 		fmt.Printf("\n文件夹 %s 下共有 %d 个 job:\n", folderName, len(allJobsInFolder))
 		if len(allJobsInFolder) > 0 {
 			// 显示所有 job（不限制数量）
@@ -106,10 +109,11 @@ func main() {
 
 	// 6. 获取指定 job 的详细信息
 	fmt.Println("\n=== 方法3: 获取指定 job 的详细信息 ===")
+	fmt.Println("使用 SDK 方法: jenkins.GetJob()")
 	specificJobName := "prod-gray-ebpay/gray-prod-mkt-thirdpart-api"
 	fmt.Printf("正在获取 job: %s\n", specificJobName)
 	
-	job, err := jenkins.GetJob(ctx, specificJobName)
+	job, err := jenkins.GetJob(ctx, specificJobName) // SDK 方法
 	if err != nil {
 		fmt.Printf("⚠️  获取 job 失败: %v\n", err)
 		fmt.Println("跳过方法3，继续执行其他方法...")
@@ -141,7 +145,7 @@ func main() {
 			}
 		}
 	}
-	
+
 	fmt.Println("\n=== 所有方法执行完成 ===")
 }
 
@@ -170,16 +174,17 @@ func getAllJobsRecursive(ctx context.Context, job *gojenkins.Job, depth int) []*
 	// 检查是否是文件夹
 	if isFolder(job) {
 		fmt.Printf("%s📁 处理文件夹: %s\n", indent, job.GetName())
-		
+
 		// 如果是文件夹，获取文件夹下的所有子项
 		if job.Raw != nil && job.Raw.Jobs != nil {
-			fmt.Printf("%s  正在获取子项...\n", indent)
+			fmt.Printf("%s  正在获取子项（使用 SDK: job.GetInnerJobs()）...\n", indent)
 			
 			// 为每个操作创建子 context，避免单个操作超时影响整体
-			subCtx, subCancel := context.WithTimeout(ctx, 30*time.Second)
-			subJobs, err := job.GetInnerJobs(subCtx)
+			// 注意: GetInnerJobs() 是 SDK 方法，内部会调用 REST API
+			subCtx, subCancel := context.WithTimeout(ctx, 60*time.Second) // 增加到 60 秒
+			subJobs, err := job.GetInnerJobs(subCtx) // 这是 SDK 方法
 			subCancel()
-			
+
 			if err != nil {
 				// 检查是否是超时错误
 				if ctx.Err() == context.DeadlineExceeded {
@@ -191,7 +196,7 @@ func getAllJobsRecursive(ctx context.Context, job *gojenkins.Job, depth int) []*
 			}
 
 			fmt.Printf("%s  找到 %d 个子项\n", indent, len(subJobs))
-			
+
 			// 递归处理每个子项（不限制深度，获取所有 job）
 			for i, subJob := range subJobs {
 				// 检查 context 是否已超时
@@ -199,7 +204,7 @@ func getAllJobsRecursive(ctx context.Context, job *gojenkins.Job, depth int) []*
 					fmt.Printf("%s  ⚠️  操作超时，已处理 %d/%d 个子项\n", indent, i, len(subJobs))
 					break
 				}
-				
+
 				fmt.Printf("%s  处理子项 %d/%d: %s\n", indent, i+1, len(subJobs), subJob.GetName())
 				jobs := getAllJobsRecursive(ctx, subJob, depth+1)
 				allJobs = append(allJobs, jobs...)
@@ -251,4 +256,3 @@ func printJobDetails(job *gojenkins.Job, ctx context.Context) {
 		}
 	}
 }
-
