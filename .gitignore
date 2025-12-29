@@ -13,6 +13,4 @@ coverage.out
 
 # 编译后的二进制文件
 jenkins_exporter
-jenkins_exporter_linux
-jenkins_exporter_linux_arm64
 *.exe
