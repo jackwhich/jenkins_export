@@ -107,7 +107,19 @@ func syncJobsOnce(ctx context.Context, client *Client, repo *storage.JobRepo, fo
 	jobNames := make([]string, 0, len(sdkJobs))
 	excludedCount := 0
 	folderCount := 0
-	for _, job := range sdkJobs {
+	totalJobs := len(sdkJobs)
+	
+	logger.Info("开始处理 job 列表",
+		"总 job 数量", totalJobs,
+		"说明", "正在逐个处理每个 job，过滤文件夹和排除的文件夹...",
+	)
+	
+	processedCount := 0
+	validCount := 0
+	progressInterval := 50 // 每处理 50 个 job 输出一次进度
+	
+	for i, job := range sdkJobs {
+		processedCount = i + 1
 		// 优先使用路径映射中的完整路径，如果没有则使用 GetName()
 		fullName := jobPathMap[job]
 		if fullName == "" {
@@ -197,6 +209,19 @@ func syncJobsOnce(ctx context.Context, client *Client, repo *storage.JobRepo, fo
 		)
 		
 		jobNames = append(jobNames, sdkPath)
+		validCount++
+		
+		// 每处理一定数量的 job 输出一次进度
+		if processedCount%progressInterval == 0 || processedCount == totalJobs {
+			logger.Info("处理进度",
+				"已处理", processedCount,
+				"总数", totalJobs,
+				"有效 job", validCount,
+				"过滤掉的文件夹", folderCount,
+				"过滤掉的排除文件夹", excludedCount,
+				"进度", fmt.Sprintf("%.1f%%", float64(processedCount)*100.0/float64(totalJobs)),
+			)
+		}
 	}
 	
 	if folderCount > 0 {
@@ -223,10 +248,13 @@ func syncJobsOnce(ctx context.Context, client *Client, repo *storage.JobRepo, fo
 		return nil
 	}
 
-	logger.Info("准备同步到 SQLite 数据库",
+	logger.Info("处理完成，准备同步到 SQLite 数据库",
+		"已处理总数", processedCount,
 		"有效 job 数量", len(jobNames),
+		"过滤掉的文件夹", folderCount,
+		"过滤掉的排除文件夹", excludedCount,
 		"指定文件夹", folders,
-		"说明", "将新增、更新或软删除 job 记录",
+		"说明", "正在将 job 列表同步到数据库（新增、更新或软删除 job 记录）...",
 	)
 
 	// 同步到 SQLite
@@ -241,14 +269,17 @@ func syncJobsOnce(ctx context.Context, client *Client, repo *storage.JobRepo, fo
 		enabledCount = len(enabledJobs)
 	}
 
-	logger.Info("Job 列表同步完成",
-		"从 Jenkins 获取", len(sdkJobs),
-		"有效 job 数量", len(jobNames),
-		"数据库中的启用 job 数量", enabledCount,
-		"过滤掉的文件夹", folderCount,
-		"过滤掉的排除文件夹", excludedCount,
+	logger.Info("✅ Job 列表同步完成",
+		"统计信息", map[string]interface{}{
+			"从 Jenkins 获取":        len(sdkJobs),
+			"已处理总数":            processedCount,
+			"有效 job 数量":         len(jobNames),
+			"数据库中的启用 job 数量": enabledCount,
+			"过滤掉的文件夹":         folderCount,
+			"过滤掉的排除文件夹":       excludedCount,
+		},
 		"指定文件夹", folders,
-		"说明", "数据库已更新，Collector 可以开始采集这些 job 的构建信息",
+		"说明", fmt.Sprintf("数据库已更新，共 %d 个 job 已同步完成，Collector 可以开始采集这些 job 的构建信息", enabledCount),
 	)
 
 	return nil
