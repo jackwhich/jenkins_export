@@ -157,33 +157,32 @@ func main() {
 
 	// 7. 获取 job 的最后一次构建（使用已获取的job对象）
 	if len(allJobsInFolder) > 0 {
-			fmt.Println("\n=== 方法4: 获取 job 的最后一次构建 ===")
-			testJob := allJobsInFolder[0]
-			fmt.Printf("使用 job: %s\n", testJob.GetName())
-			
-			lastBuild, err := testJob.GetLastCompletedBuild(ctx)
-			if err != nil {
-				fmt.Printf("⚠️  获取最后构建失败: %v\n", err)
-				if strings.Contains(err.Error(), "404") || strings.Contains(err.Error(), "not found") {
-					fmt.Printf("   说明: 该 job 还没有已完成的构建\n")
+		fmt.Println("\n=== 方法4: 获取 job 的最后一次构建 ===")
+		testJob := allJobsInFolder[0]
+		fmt.Printf("使用 job: %s\n", testJob.GetName())
+		
+		lastBuild, err := testJob.GetLastCompletedBuild(ctx)
+		if err != nil {
+			fmt.Printf("⚠️  获取最后构建失败: %v\n", err)
+			if strings.Contains(err.Error(), "404") || strings.Contains(err.Error(), "not found") {
+				fmt.Printf("   说明: 该 job 还没有已完成的构建\n")
+			}
+		} else {
+			fmt.Printf("✅ 成功获取最后构建\n")
+			fmt.Printf("最后构建编号: #%d\n", lastBuild.GetBuildNumber())
+			fmt.Printf("构建结果: %s\n", lastBuild.GetResult())
+			fmt.Printf("构建时间: %v\n", lastBuild.GetTimestamp())
+			fmt.Printf("构建时长: %d ms\n", lastBuild.GetDuration())
+
+			// 获取构建参数
+			params := lastBuild.GetParameters()
+			if len(params) > 0 {
+				fmt.Println("构建参数:")
+				for _, param := range params {
+					fmt.Printf("  - %s: %v\n", param.Name, param.Value)
 				}
 			} else {
-				fmt.Printf("✅ 成功获取最后构建\n")
-				fmt.Printf("最后构建编号: #%d\n", lastBuild.GetBuildNumber())
-				fmt.Printf("构建结果: %s\n", lastBuild.GetResult())
-				fmt.Printf("构建时间: %v\n", lastBuild.GetTimestamp())
-				fmt.Printf("构建时长: %d ms\n", lastBuild.GetDuration())
-
-				// 获取构建参数
-				params := lastBuild.GetParameters()
-				if len(params) > 0 {
-					fmt.Println("构建参数:")
-					for _, param := range params {
-						fmt.Printf("  - %s: %v\n", param.Name, param.Value)
-					}
-				} else {
-					fmt.Println("构建参数: 无")
-				}
+				fmt.Println("构建参数: 无")
 			}
 		}
 	}
