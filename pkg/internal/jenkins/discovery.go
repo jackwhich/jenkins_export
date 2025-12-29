@@ -75,6 +75,7 @@ func syncJobsOnce(ctx context.Context, client *Client, repo *storage.JobRepo, fo
 	
 	jobNames := make([]string, 0, len(sdkJobs))
 	excludedCount := 0
+	folderCount := 0
 	for _, job := range sdkJobs {
 		// 优先使用路径映射中的完整路径，如果没有则使用 GetName()
 		fullName := jobPathMap[job]
@@ -90,12 +91,52 @@ func syncJobsOnce(ctx context.Context, client *Client, repo *storage.JobRepo, fo
 			continue
 		}
 		
+		// 再次验证：确保不是文件夹类型的 job
+		// 虽然 GetAllJobsRecursive 已经过滤了，但为了安全起见，这里再次检查
+		isFolder := false
+		if job.Raw != nil {
+			jobClass := job.Raw.Class
+			if jobClass != "" {
+				if strings.Contains(jobClass, "Folder") || 
+				   strings.Contains(jobClass, "folder") ||
+				   strings.Contains(jobClass, "com.cloudbees.hudson.plugins.folder") {
+					isFolder = true
+				}
+			}
+		}
+		
+		// 如果 Raw 为空或 Class 未设置，尝试通过 GetInnerJobs 来判断
+		// 注意：这会产生额外的 API 调用，但可以更准确地识别文件夹
+		if !isFolder && (job.Raw == nil || job.Raw.Class == "") {
+			// 创建子 context，避免超时影响整体
+			checkCtx, checkCancel := context.WithTimeout(ctx, 5*time.Second)
+			subJobs, err := job.GetInnerJobs(checkCtx)
+			checkCancel()
+			
+			if err == nil {
+				// 能成功调用 GetInnerJobs，说明是文件夹
+				isFolder = true
+				logger.Debug("在 Discovery 阶段检测到文件夹类型，跳过",
+					"job_name", fullName,
+					"子项数量", len(subJobs),
+				)
+			}
+		}
+		
+		if isFolder {
+			folderCount++
+			logger.Debug("跳过文件夹类型的 job（在 Discovery 阶段）",
+				"job_name", fullName,
+			)
+			continue
+		}
+		
 		// 记录 job 的完整路径信息（用于调试）
 		source := "GetName()"
 		if jobPathMap[job] != "" {
 			source = "路径映射"
 		}
-		logger.Debug("获取到 job 完整路径",
+		logger.Debug("获取到构建 job 完整路径",
 			"full_name", fullName,
 			"来源", source,
 			"说明", "将存储到 SQLite。如果是文件夹下的 job，应该是完整路径 folder/job",
@@ -116,6 +157,12 @@ func syncJobsOnce(ctx context.Context, client *Client, repo *storage.JobRepo, fo
 		}
 		
 		jobNames = append(jobNames, fullName)
+	}
+	
+	if folderCount > 0 {
+		logger.Debug("在 Discovery 阶段过滤掉文件夹类型的 job",
+			"文件夹数量", folderCount,
+		)
 	}
 	
 	if excludedCount > 0 {
