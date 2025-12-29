@@ -23,11 +23,11 @@ type BuildCollector struct {
 	concurrency      int // 并发数
 
 	// 按需采集相关字段
-	lastCollectTime time.Time
-	collectMutex    sync.Mutex
-	collecting      bool          // 是否正在采集
-	collectTrigger  chan struct{} // 触发采集的通道
-	firstCollect    sync.Once     // 确保首次采集完成
+	lastCollectTime  time.Time
+	collectMutex     sync.Mutex
+	collecting       bool          // 是否正在采集
+	collectTrigger   chan struct{} // 触发采集的通道
+	firstCollect     sync.Once     // 确保首次采集完成
 	firstCollectDone chan struct{} // 首次采集完成信号
 }
 
@@ -48,7 +48,7 @@ func NewBuildCollector(client *Client, repo *storage.JobRepo, logger *slog.Logge
 			[]string{"job_name", "check_commitID", "gitBranch", "status"},
 		),
 		concurrency:      concurrency,
-		collectTrigger:  make(chan struct{}, 1), // 带缓冲的通道，避免阻塞
+		collectTrigger:   make(chan struct{}, 1), // 带缓冲的通道，避免阻塞
 		firstCollectDone: make(chan struct{}),    // 首次采集完成信号
 	}
 }
@@ -60,53 +60,26 @@ func (c *BuildCollector) Describe(ch chan<- *prometheus.Desc) {
 
 // Collect implements prometheus.Collector.
 // 当 Prometheus 抓取 /metrics 时，这个方法会被调用。
-// 如果是首次请求，同步执行首次采集并等待完成后再返回指标；否则触发异步采集并返回当前指标。
+// 如果是首次请求，触发异步采集并等待最多 5 秒；否则触发异步采集并立即返回当前指标。
 func (c *BuildCollector) Collect(ch chan<- prometheus.Metric) {
-	// 如果是首次请求，同步执行首次采集并等待完成
+	// 如果是首次请求，触发异步采集并等待一小段时间（避免 Prometheus 超时）
 	c.firstCollect.Do(func() {
-		c.logger.Info("首次请求 /metrics，同步执行首次采集...")
-		// 同步执行首次采集，确保首次请求返回最新数据
-		c.collectMutex.Lock()
-		if !c.collecting {
-			c.collecting = true
-			c.collectMutex.Unlock()
-			
-			// 同步执行首次采集
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-			err := c.collectOnce(ctx)
-			cancel()
-			
-			c.collectMutex.Lock()
-			c.collecting = false
-			c.lastCollectTime = time.Now()
-			c.collectMutex.Unlock()
-			
-			if err != nil {
-				c.logger.Warn("首次采集失败",
-					"错误", err,
-				)
-			} else {
-				c.logger.Info("首次采集完成，返回指标")
-			}
-			
-			// 发送完成信号
-			select {
-			case c.firstCollectDone <- struct{}{}:
-			default:
-			}
-		} else {
-			c.collectMutex.Unlock()
-			// 如果正在采集，等待完成（最多等待 2 分钟）
-			select {
-			case <-c.firstCollectDone:
-				c.logger.Info("首次采集完成，返回指标")
-			case <-time.After(2 * time.Minute):
-				c.logger.Warn("首次采集超时，返回当前指标（可能为空）")
-			}
+		c.logger.Info("首次请求 /metrics，触发异步采集...")
+		// 触发异步采集
+		c.triggerCollectionIfNeeded()
+		// 等待一小段时间（最多 5 秒），如果完成就返回最新数据，否则返回当前数据
+		// 这样可以避免 Prometheus 抓取超时（通常默认 10 秒）
+		select {
+		case <-c.firstCollectDone:
+			c.logger.Info("首次采集在 5 秒内完成，返回最新指标")
+		case <-time.After(5 * time.Second):
+			c.logger.Info("首次采集未在 5 秒内完成，返回当前指标（可能为空或部分数据）",
+				"说明", "采集将在后台继续完成，下次请求将返回完整数据",
+			)
 		}
 	})
 
-	// 非首次请求：触发异步采集（如果距离上次采集超过一定时间，或者正在采集中则跳过）
+	// 触发异步采集（如果距离上次采集超过一定时间，或者正在采集中则跳过）
 	c.triggerCollectionIfNeeded()
 
 	// 返回当前的指标值
@@ -259,13 +232,13 @@ func (c *BuildCollector) collectOnceAsync(ctx context.Context) error {
 	}
 	c.collecting = true
 	c.collectMutex.Unlock()
-	
+
 	defer func() {
 		c.collectMutex.Lock()
 		c.collecting = false
 		c.lastCollectTime = time.Now()
 		c.collectMutex.Unlock()
-		
+
 		// 如果是首次采集，发送完成信号
 		select {
 		case c.firstCollectDone <- struct{}{}:
