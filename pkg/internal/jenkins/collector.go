@@ -20,12 +20,12 @@ type BuildCollector struct {
 	logger           *slog.Logger
 	buildResultGauge *prometheus.GaugeVec
 	mu               sync.RWMutex
-	
+
 	// 按需采集相关字段
-	lastCollectTime  time.Time
-	collectMutex     sync.Mutex
-	collecting       bool // 是否正在采集
-	collectTrigger   chan struct{} // 触发采集的通道
+	lastCollectTime time.Time
+	collectMutex    sync.Mutex
+	collecting      bool          // 是否正在采集
+	collectTrigger  chan struct{} // 触发采集的通道
 }
 
 // NewBuildCollector creates a new BuildCollector instance.
@@ -56,7 +56,7 @@ func (c *BuildCollector) Describe(ch chan<- *prometheus.Desc) {
 func (c *BuildCollector) Collect(ch chan<- prometheus.Metric) {
 	// 触发异步采集（如果距离上次采集超过一定时间，或者正在采集中则跳过）
 	c.triggerCollectionIfNeeded()
-	
+
 	// 返回当前的指标值（即使正在采集，也返回当前已有的指标）
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -67,13 +67,13 @@ func (c *BuildCollector) Collect(ch chan<- prometheus.Metric) {
 func (c *BuildCollector) triggerCollectionIfNeeded() {
 	c.collectMutex.Lock()
 	defer c.collectMutex.Unlock()
-	
+
 	// 如果正在采集，不重复触发
 	if c.collecting {
 		c.logger.Debug("采集正在进行中，跳过本次触发")
 		return
 	}
-	
+
 	// 如果距离上次采集时间太短（小于 5 秒），不触发（避免频繁采集）
 	timeSinceLastCollect := time.Since(c.lastCollectTime)
 	if timeSinceLastCollect < 5*time.Second {
@@ -82,7 +82,7 @@ func (c *BuildCollector) triggerCollectionIfNeeded() {
 		)
 		return
 	}
-	
+
 	// 异步触发采集
 	select {
 	case c.collectTrigger <- struct{}{}:
@@ -103,7 +103,45 @@ func (c *BuildCollector) Start(ctx context.Context, interval time.Duration) erro
 		"最大采集间隔", interval,
 	)
 
-	// 立即执行一次采集（初始化）
+	// 等待 Discovery 完成首次同步（避免数据库为空）
+	// 最多等待 30 秒，每 2 秒检查一次
+	c.logger.Info("等待 Discovery 完成首次同步...")
+	maxWaitTime := 30 * time.Second
+	checkInterval := 2 * time.Second
+	waited := false
+	
+	for i := 0; i < int(maxWaitTime/checkInterval); i++ {
+		jobs, err := c.repo.ListEnabledJobs()
+		if err == nil && len(jobs) > 0 {
+			c.logger.Info("Discovery 已完成首次同步，开始采集",
+				"job 数量", len(jobs),
+			)
+			waited = true
+			break
+		}
+		
+		if i == 0 {
+			c.logger.Debug("数据库为空，等待 Discovery 同步...",
+				"说明", "Discovery 正在从 Jenkins 获取 job 列表并同步到数据库",
+			)
+		}
+		
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(checkInterval):
+			// 继续等待
+		}
+	}
+	
+	if !waited {
+		c.logger.Warn("等待 Discovery 同步超时，将使用当前数据库状态",
+			"等待时间", maxWaitTime,
+			"提示", "如果数据库仍然为空，请检查 Discovery 日志或 Jenkins 连接",
+		)
+	}
+	
+	// 执行首次采集
 	if err := c.collectOnceAsync(ctx); err != nil {
 		c.logger.Warn("首次采集失败",
 			"错误", err,
@@ -158,7 +196,7 @@ func (c *BuildCollector) collectOnceAsync(ctx context.Context) error {
 	}
 	c.collecting = true
 	c.collectMutex.Unlock()
-	
+
 	defer func() {
 		c.collectMutex.Lock()
 		c.collecting = false
@@ -201,7 +239,14 @@ func (c *BuildCollector) collectOnce(ctx context.Context) error {
 	)
 
 	if len(jobs) == 0 {
-		c.logger.Warn("没有启用的 job 需要采集，请检查 SQLite 数据库或等待 Discovery 同步完成")
+		c.logger.Warn("没有启用的 job 需要采集",
+			"可能原因", []string{
+				"Discovery 尚未完成首次同步（请等待 Discovery 同步完成）",
+				"SQLite 数据库中确实没有 job（请检查 Discovery 日志）",
+				"所有 job 都被过滤掉了（检查排除文件夹配置）",
+			},
+			"建议", "查看 Discovery 日志，确认是否成功从 Jenkins 获取 job 列表",
+		)
 		return nil
 	}
 
@@ -259,17 +304,17 @@ func (c *BuildCollector) collectOnce(ctx context.Context) error {
 	semaphore := make(chan struct{}, maxConcurrency)
 	var wg sync.WaitGroup
 	resultChan := make(chan *jobProcessResult, len(jobs))
-	
+
 	// 启动 goroutine 处理每个 job
 	for _, job := range jobs {
 		wg.Add(1)
 		go func(j storage.Job) {
 			defer wg.Done()
-			
+
 			// 获取信号量（控制并发数）
 			semaphore <- struct{}{}
 			defer func() { <-semaphore }()
-			
+
 			// 检查 context 是否已取消
 			if ctx.Err() != nil {
 				return
