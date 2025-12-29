@@ -2,8 +2,10 @@ package jenkins
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -113,7 +115,22 @@ func (c *BuildCollector) collectOnce(ctx context.Context) error {
 
 	// 处理每个 job
 	for _, job := range jobs {
+		// 检查 context 是否已取消（优雅关闭）
+		if ctx.Err() != nil {
+			c.logger.Debug("采集被中断",
+				"原因", ctx.Err(),
+			)
+			break
+		}
+
 		if err := c.processJob(ctx, job); err != nil {
+			// 如果是 context canceled，不记录为错误（优雅关闭）
+			if ctx.Err() == context.Canceled {
+				c.logger.Debug("采集被取消，停止处理",
+					"job_name", job.JobName,
+				)
+				break
+			}
 			c.logger.Warn("处理 job 失败",
 				"job_name", job.JobName,
 				"错误", err,
@@ -150,9 +167,18 @@ func (c *BuildCollector) processJob(ctx context.Context, job storage.Job) error 
 		return fmt.Errorf("failed to initialize SDK: %w", err)
 	}
 
+	// 检查 context 是否已取消
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
 	// 使用 SDK 获取 job 的 lastCompletedBuild
 	sdkBuild, buildNumber, err := c.client.SDK.GetLastCompletedBuild(ctx, job.JobName)
 	if err != nil {
+		// 如果是 context canceled，直接返回，不包装错误
+		if errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "context canceled") {
+			return context.Canceled
+		}
 		return fmt.Errorf("failed to get last completed build: %w", err)
 	}
 
@@ -184,9 +210,18 @@ func (c *BuildCollector) processJob(ctx context.Context, job storage.Job) error 
 		return nil
 	}
 
+	// 检查 context 是否已取消
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
 	// 获取构建详情（包括参数）
 	buildDetails, err := c.client.SDK.GetBuildDetails(ctx, sdkBuild)
 	if err != nil {
+		// 如果是 context canceled，直接返回
+		if errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "context canceled") {
+			return context.Canceled
+		}
 		c.logger.Warn("获取构建详情失败，使用基本信息",
 			"job_name", job.JobName,
 			"error", err,

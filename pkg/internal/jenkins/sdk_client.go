@@ -2,6 +2,7 @@ package jenkins
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -93,14 +94,32 @@ func (c *SDKClient) GetJobByFullName(ctx context.Context, fullName string) (*goj
 
 // GetLastCompletedBuild gets the last completed build for a job.
 func (c *SDKClient) GetLastCompletedBuild(ctx context.Context, fullName string) (*gojenkins.Build, int64, error) {
+	// 检查 context 是否已取消
+	if ctx.Err() != nil {
+		return nil, 0, ctx.Err()
+	}
+
 	job, err := c.GetJobByFullName(ctx, fullName)
 	if err != nil {
+		// 如果是 context canceled，直接返回
+		if errors.Is(err, context.Canceled) || ctx.Err() == context.Canceled || strings.Contains(err.Error(), "context canceled") {
+			return nil, 0, context.Canceled
+		}
 		return nil, 0, err
+	}
+
+	// 再次检查 context（在调用 SDK 前）
+	if ctx.Err() != nil {
+		return nil, 0, ctx.Err()
 	}
 
 	// 获取最后一次完成的构建
 	build, err := job.GetLastCompletedBuild(ctx)
 	if err != nil {
+		// 如果是 context canceled，直接返回
+		if errors.Is(err, context.Canceled) || ctx.Err() == context.Canceled || strings.Contains(err.Error(), "context canceled") {
+			return nil, 0, context.Canceled
+		}
 		// 如果没有完成的构建，返回 nil
 		if strings.Contains(err.Error(), "404") || strings.Contains(err.Error(), "not found") {
 			return nil, 0, nil
