@@ -68,48 +68,72 @@ func main() {
 	// 5. 获取指定文件夹下的所有 job（递归）
 	fmt.Println("\n=== 方法2: 递归获取指定文件夹下的所有 job ===")
 	folderName := "prod-gray-ebpay"
+	fmt.Printf("正在获取文件夹: %s\n", folderName)
+	
 	folderJob, err := jenkins.GetJob(ctx, folderName)
 	if err != nil {
-		log.Fatalf("获取文件夹失败: %v", err)
-	}
-
-	// 递归获取文件夹下的所有 job
-	allJobsInFolder := getAllJobsRecursive(ctx, folderJob)
-	fmt.Printf("文件夹 %s 下共有 %d 个 job:\n", folderName, len(allJobsInFolder))
-	for i, job := range allJobsInFolder {
-		fmt.Printf("%d. %s\n", i+1, job.GetName())
+		fmt.Printf("⚠️  获取文件夹失败: %v\n", err)
+		fmt.Println("跳过方法2，继续执行其他方法...")
+	} else {
+		fmt.Printf("✅ 成功获取文件夹: %s\n", folderName)
+		
+		// 显示文件夹信息
+		if folderJob.Raw != nil {
+			fmt.Printf("文件夹类型: %s\n", folderJob.Raw.Class)
+		}
+		
+		// 递归获取文件夹下的所有 job
+		fmt.Println("开始递归获取文件夹下的所有 job...")
+		allJobsInFolder := getAllJobsRecursive(ctx, folderJob, 0)
+		fmt.Printf("\n文件夹 %s 下共有 %d 个 job:\n", folderName, len(allJobsInFolder))
+		if len(allJobsInFolder) > 0 {
+			for i, job := range allJobsInFolder {
+				fmt.Printf("%d. %s\n", i+1, job.GetName())
+			}
+		} else {
+			fmt.Println("  (文件夹下没有找到实际的构建 job)")
+		}
 	}
 
 	// 6. 获取指定 job 的详细信息
 	fmt.Println("\n=== 方法3: 获取指定 job 的详细信息 ===")
 	specificJobName := "prod-gray-ebpay/gray-prod-mkt-thirdpart-api"
+	fmt.Printf("正在获取 job: %s\n", specificJobName)
+	
 	job, err := jenkins.GetJob(ctx, specificJobName)
 	if err != nil {
-		log.Fatalf("获取 job 失败: %v", err)
-	}
-
-	printJobDetails(job, ctx)
-
-	// 7. 获取 job 的最后一次构建
-	fmt.Println("\n=== 方法4: 获取 job 的最后一次构建 ===")
-	lastBuild, err := job.GetLastCompletedBuild(ctx)
-	if err != nil {
-		fmt.Printf("获取最后构建失败: %v\n", err)
+		fmt.Printf("⚠️  获取 job 失败: %v\n", err)
+		fmt.Println("跳过方法3，继续执行其他方法...")
 	} else {
-		fmt.Printf("最后构建编号: #%d\n", lastBuild.GetBuildNumber())
-		fmt.Printf("构建结果: %s\n", lastBuild.GetResult())
-		fmt.Printf("构建时间: %v\n", lastBuild.GetTimestamp())
-		fmt.Printf("构建时长: %d ms\n", lastBuild.GetDuration())
+		fmt.Printf("✅ 成功获取 job: %s\n", specificJobName)
+		printJobDetails(job, ctx)
 
-		// 获取构建参数
-		params := lastBuild.GetParameters()
-		if len(params) > 0 {
-			fmt.Println("构建参数:")
-			for _, param := range params {
-				fmt.Printf("  - %s: %v\n", param.Name, param.Value)
+		// 7. 获取 job 的最后一次构建
+		fmt.Println("\n=== 方法4: 获取 job 的最后一次构建 ===")
+		lastBuild, err := job.GetLastCompletedBuild(ctx)
+		if err != nil {
+			fmt.Printf("⚠️  获取最后构建失败: %v\n", err)
+		} else {
+			fmt.Printf("✅ 成功获取最后构建\n")
+			fmt.Printf("最后构建编号: #%d\n", lastBuild.GetBuildNumber())
+			fmt.Printf("构建结果: %s\n", lastBuild.GetResult())
+			fmt.Printf("构建时间: %v\n", lastBuild.GetTimestamp())
+			fmt.Printf("构建时长: %d ms\n", lastBuild.GetDuration())
+
+			// 获取构建参数
+			params := lastBuild.GetParameters()
+			if len(params) > 0 {
+				fmt.Println("构建参数:")
+				for _, param := range params {
+					fmt.Printf("  - %s: %v\n", param.Name, param.Value)
+				}
+			} else {
+				fmt.Println("构建参数: 无")
 			}
 		}
 	}
+	
+	fmt.Println("\n=== 所有方法执行完成 ===")
 }
 
 // isFolder 检查是否是文件夹
@@ -124,27 +148,37 @@ func isFolder(job *gojenkins.Job) bool {
 }
 
 // getAllJobsRecursive 递归获取文件夹下的所有 job
-func getAllJobsRecursive(ctx context.Context, job *gojenkins.Job) []*gojenkins.Job {
+func getAllJobsRecursive(ctx context.Context, job *gojenkins.Job, depth int) []*gojenkins.Job {
 	allJobs := make([]*gojenkins.Job, 0)
+	indent := strings.Repeat("  ", depth)
 
 	// 检查是否是文件夹
 	if isFolder(job) {
+		fmt.Printf("%s📁 处理文件夹: %s\n", indent, job.GetName())
+		
 		// 如果是文件夹，获取文件夹下的所有子项
 		if job.Raw != nil && job.Raw.Jobs != nil {
+			fmt.Printf("%s  正在获取子项...\n", indent)
 			subJobs, err := job.GetInnerJobs(ctx)
 			if err != nil {
-				fmt.Printf("获取文件夹 %s 的子项失败: %v\n", job.GetName(), err)
+				fmt.Printf("%s  ⚠️  获取子项失败: %v\n", indent, err)
 				return allJobs
 			}
 
+			fmt.Printf("%s  找到 %d 个子项\n", indent, len(subJobs))
+			
 			// 递归处理每个子项
-			for _, subJob := range subJobs {
-				jobs := getAllJobsRecursive(ctx, subJob)
+			for i, subJob := range subJobs {
+				fmt.Printf("%s  处理子项 %d/%d: %s\n", indent, i+1, len(subJobs), subJob.GetName())
+				jobs := getAllJobsRecursive(ctx, subJob, depth+1)
 				allJobs = append(allJobs, jobs...)
 			}
+		} else {
+			fmt.Printf("%s  (文件夹为空或无法获取子项)\n", indent)
 		}
 	} else {
 		// 如果不是文件夹，就是实际的构建 job，直接添加
+		fmt.Printf("%s✅ 找到 job: %s\n", indent, job.GetName())
 		allJobs = append(allJobs, job)
 	}
 
