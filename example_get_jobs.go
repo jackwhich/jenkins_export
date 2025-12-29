@@ -14,9 +14,9 @@ import (
 func main() {
 	// 1. 创建 Jenkins 客户端
 	// ⚠️ 请修改为你的 Jenkins 连接信息
-	jenkinsURL := "http://dxxxxxxx" // 改为你的 Jenkins URL
-	username := "xxxxxx                // 改为你的用户名
-	password := "xxxxxxxx"                // 改为你的密码
+	jenkinsURL := "http://jenkins.example.com" // 改为你的 Jenkins URL
+	username := "your_username"                 // 改为你的用户名
+	password := "your_password"                // 改为你的密码
 
 	// 或者从环境变量读取
 	if jenkinsURL == "http://jenkins.example.com" {
